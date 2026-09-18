@@ -2,22 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from desktop_assistant.assistant import Assistant
-from desktop_assistant.config import AppCatalog, Settings
-from desktop_assistant.launcher import WindowsSystemLauncher
-from desktop_assistant.router import CommandRouter
-from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
-
-
-def build_assistant() -> Assistant:
-    launcher = WindowsSystemLauncher()
-    catalog = AppCatalog()
-    router = CommandRouter(
-        OpenAppTool(launcher, catalog),
-        OpenFolderTool(launcher),
-        OpenWebsiteTool(launcher),
-    )
-    return Assistant(router)
+from desktop_assistant.bootstrap import build_assistant
+from desktop_assistant.config import Settings
 
 
 def main() -> int:
@@ -46,4 +32,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

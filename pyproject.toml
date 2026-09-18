@@ -13,6 +13,9 @@ authors = [{ name = "Project Owner" }]
 dependencies = []
 
 [project.optional-dependencies]
+gui = [
+  "PySide6>=6.8,<7.0",
+]
 dev = [
   "pytest>=8.0,<9.0",
   "pytest-cov>=5.0,<7.0",
@@ -20,6 +23,9 @@ dev = [
 
 [project.scripts]
 windows-assistant = "desktop_assistant.cli:main"
+
+[project.gui-scripts]
+windows-assistant-gui = "desktop_assistant.gui.app:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -31,4 +37,3 @@ where = ["src"]
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["src"]
-
