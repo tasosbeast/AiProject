@@ -123,6 +123,22 @@ def test_unexpected_failure_restores_usable_state(qt_app: QApplication) -> None:
     assert window.status_label.text() == "Ready"
 
 
+def test_provider_failure_result_returns_gui_to_ready(qt_app: QApplication) -> None:
+    result = ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+    assistant = FakeAssistant(result=result)
+    window = make_window(assistant)
+    window.command_input.setPlainText("Could you open Chrome?")
+
+    window.submit_command()
+    wait_until(qt_app, lambda: not window.is_processing)
+
+    assert assistant.calls == ["Could you open Chrome?"]
+    assert window.conversation.messages[-1].text == result.message
+    assert window.send_button.isEnabled()
+    assert window.command_input.isEnabled()
+    assert window.status_label.text() == "Ready"
+
+
 def test_duplicate_submission_is_ignored_while_processing(qt_app: QApplication) -> None:
     assistant = BlockingAssistant()
     window = make_window(assistant)
@@ -150,7 +166,16 @@ def test_core_modules_do_not_import_qt() -> None:
         "models.py",
         "config.py",
         "bootstrap.py",
+        "tool_registry.py",
+        "known_folders.py",
     )
 
     for filename in core_modules:
         assert "PySide6" not in (package_root / filename).read_text(encoding="utf-8")
+
+
+def test_gui_modules_do_not_import_openai() -> None:
+    gui_root = __import__("pathlib").Path(__file__).parents[1] / "src" / "desktop_assistant" / "gui"
+
+    for path in gui_root.glob("*.py"):
+        assert "openai" not in path.read_text(encoding="utf-8").casefold()

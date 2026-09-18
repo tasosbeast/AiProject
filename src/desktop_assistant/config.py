@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import find_dotenv, load_dotenv
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,10 +66,32 @@ SUPPORTED_APPS: tuple[AppDefinition, ...] = (
 @dataclass(frozen=True, slots=True)
 class Settings:
     log_level: str = "INFO"
+    openai_api_key: str | None = field(default=None, repr=False)
+    openai_model: str = "gpt-5.6-luna"
+    openai_timeout_seconds: float = 15.0
+    openai_max_retries: int = 1
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        return cls(log_level=os.getenv("ASSISTANT_LOG_LEVEL", "INFO").upper())
+        return cls(
+            log_level=os.getenv("ASSISTANT_LOG_LEVEL", "INFO").upper(),
+            openai_api_key=os.getenv("OPENAI_API_KEY") or None,
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+        )
+
+
+def load_settings(env_file: str | Path | None = None) -> Settings:
+    """Load local values without replacing explicit process environment values."""
+
+    if env_file is None:
+        discovered = find_dotenv(".env.local", usecwd=True)
+        if discovered:
+            load_dotenv(discovered, override=False)
+    else:
+        path = Path(env_file)
+        if path.is_file():
+            load_dotenv(path, override=False)
+    return Settings.from_environment()
 
 
 class AppCatalog:
@@ -87,4 +112,3 @@ class AppCatalog:
 
     def names(self) -> tuple[str, ...]:
         return tuple(app.display_name for app in self._apps)
-

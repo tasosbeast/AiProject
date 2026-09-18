@@ -3,16 +3,16 @@ from __future__ import annotations
 import logging
 
 from desktop_assistant.bootstrap import build_assistant
-from desktop_assistant.config import Settings
+from desktop_assistant.config import load_settings
 
 
 def main() -> int:
-    settings = Settings.from_environment()
+    settings = load_settings()
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    assistant = build_assistant()
+    assistant = build_assistant(settings=settings)
 
     print("Assistant > What would you like me to do? Type 'help' for commands.")
     while True:

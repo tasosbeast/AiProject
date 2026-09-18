@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Project Owner" }]
-dependencies = []
+dependencies = [
+  "openai>=2.26,<3.0",
+  "python-dotenv>=1.1,<2.0",
+]
 
 [project.optional-dependencies]
 gui = [
