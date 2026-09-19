@@ -20,6 +20,8 @@ class CommandRouter:
     _website = re.compile(r"^open\s+(?:website|site)\s+(.+?)\s*$", re.IGNORECASE)
     _direct_url = re.compile(r"^open\s+(https?://\S+)\s*$", re.IGNORECASE)
     _folder = re.compile(r"^open\s+folder\s+(.+)$", re.IGNORECASE)
+    _list_folder = re.compile(r"^list\s+folder\s+(.+)$", re.IGNORECASE)
+    _check_path = re.compile(r"^(?:check\s+path|path\s+exists)\s+(.+)$", re.IGNORECASE)
     _explicit_app = re.compile(r"^open\s+app\s+(.+?)\s*$", re.IGNORECASE)
     _simple_app = re.compile(r"^open\s+(.+?)\s*$", re.IGNORECASE)
 
@@ -64,6 +66,20 @@ class CommandRouter:
                 self._registry.execute("open_folder", {"path": match.group(1)}),
             )
 
+        match = self._list_folder.fullmatch(text)
+        if match:
+            return RouteDecision(
+                True,
+                self._registry.execute("list_folder", {"path": match.group(1)}),
+            )
+
+        match = self._check_path.fullmatch(text)
+        if match:
+            return RouteDecision(
+                True,
+                self._registry.execute("path_exists", {"path": match.group(1)}),
+            )
+
         match = self._explicit_app.fullmatch(text)
         if match:
             return RouteDecision(
@@ -106,6 +122,8 @@ class CommandRouter:
             "Supported commands:\n"
             "  open <Chrome|Spotify|VS Code|File Explorer|Notepad>\n"
             "  open folder <existing path>\n"
+            "  list folder <existing path>\n"
+            "  check path <path>\n"
             "  open website <http-or-https URL>\n"
             "  help\n"
             "  exit"

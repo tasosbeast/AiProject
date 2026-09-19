@@ -6,6 +6,14 @@ import pytest
 
 from desktop_assistant.assistant import Assistant
 from desktop_assistant.config import AppCatalog
+from desktop_assistant.filesystem import FilesystemPathValidator
+from desktop_assistant.filesystem_tools import (
+    CreateFolderTool,
+    ListFolderTool,
+    MovePathTool,
+    PathExistsTool,
+    RenamePathTool,
+)
 from desktop_assistant.intent.models import IntentResult
 from desktop_assistant.intent.provider import IntentProviderUnavailableError
 from desktop_assistant.known_folders import KnownFolderResolver
@@ -37,11 +45,17 @@ def make_assistant(
     home: Path | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
+    validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
             OpenFolderTool(launcher),
             OpenWebsiteTool(launcher),
+            ListFolderTool(validator),
+            PathExistsTool(validator),
+            CreateFolderTool(validator),
+            RenamePathTool(validator),
+            MovePathTool(validator),
         ),
         known_folders=KnownFolderResolver(home),
     )
@@ -177,3 +191,35 @@ def test_recognized_rejection_never_falls_through_to_ai() -> None:
     assert not result.success
     assert provider.calls == []
     assert launcher.apps == []
+
+
+def test_natural_sensitive_action_calls_provider_once_across_confirmation(tmp_path: Path) -> None:
+    source = tmp_path / "draft.txt"
+    destination = tmp_path / "final.txt"
+    source.write_text("draft", encoding="utf-8")
+    launcher = FakeLauncher()
+    provider = FakeProvider(
+        IntentResult.tool_action(
+            "rename_path",
+            {"source": str(source), "destination": str(destination)},
+        )
+    )
+    assistant = make_assistant(launcher, provider)
+
+    response = assistant.handle("Μετονόμασε το draft.txt σε final.txt.")
+    assert response.confirmation is not None
+    result = assistant.confirm(response.confirmation.confirmation_id)
+
+    assert result.success
+    assert provider.calls == ["Μετονόμασε το draft.txt σε final.txt."]
+    assert not source.exists() and destination.exists()
+
+
+def test_natural_safe_filesystem_query_does_not_prompt(tmp_path: Path) -> None:
+    provider = FakeProvider(IntentResult.tool_action("list_folder", {"path": str(tmp_path)}))
+    assistant = make_assistant(FakeLauncher(), provider)
+
+    response = assistant.handle("Τι έχει μέσα αυτός ο ακριβής φάκελος;")
+
+    assert response.success
+    assert response.confirmation is None

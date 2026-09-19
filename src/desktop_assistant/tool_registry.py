@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any, Mapping, Protocol, TypeAlias
+from dataclasses import dataclass, fields, is_dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Protocol, TypeAlias
 
-from desktop_assistant.confirmation import (
-    ConfirmationManager,
-    ConfirmationOutcome,
-    PreparedAction,
-)
+from desktop_assistant.confirmation import ConfirmationManager, ConfirmationOutcome, PreparedAction
 from desktop_assistant.known_folders import KnownFolderResolver
-from desktop_assistant.models import ConfirmationRequest, RiskLevel, ToolPreparation, ToolResult
+from desktop_assistant.models import (
+    ConfirmationRequest,
+    RiskLevel,
+    ToolArguments,
+    ToolPreparation,
+    ToolResult,
+)
 from desktop_assistant.safety import AuthorizationDecision, SafetyPolicy
 
 
@@ -22,32 +26,51 @@ logger = logging.getLogger(__name__)
 class RegisteredTool(Protocol):
     name: str
 
-    def prepare(self, value: str) -> ToolPreparation | ToolResult: ...
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult: ...
 
     def execute(self, prepared_value: object) -> ToolResult: ...
+
+
+class ToolArgumentType(str, Enum):
+    STRING = "string"
+
+    @property
+    def python_type(self) -> type[object]:
+        return str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolArgumentDefinition:
+    name: str
+    description: str
+    argument_type: ToolArgumentType = ToolArgumentType.STRING
+    required: bool = True
+    resolve_known_folder: bool = False
+
+    def schema(self) -> dict[str, Any]:
+        return {"type": self.argument_type.value, "description": self.description}
 
 
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
     name: str
     description: str
-    argument_name: str
-    argument_description: str
+    arguments: tuple[ToolArgumentDefinition, ...]
     implementation: RegisteredTool
     risk_level: RiskLevel
-    confirmation_summary: Callable[[Mapping[str, str]], str]
+    confirmation_summary: Callable[[ToolArguments], str]
     confirmation_warning: str | None = None
+
+    def __post_init__(self) -> None:
+        names = tuple(argument.name for argument in self.arguments)
+        if not names or len(names) != len(set(names)):
+            raise ValueError("Tool argument names must be present and unique.")
 
     def input_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {
-                self.argument_name: {
-                    "type": "string",
-                    "description": self.argument_description,
-                }
-            },
-            "required": [self.argument_name],
+            "properties": {argument.name: argument.schema() for argument in self.arguments},
+            "required": [argument.name for argument in self.arguments if argument.required],
             "additionalProperties": False,
         }
 
@@ -65,7 +88,7 @@ RegistryOutcome: TypeAlias = ToolResult | ConfirmationRequest
 
 
 class ToolRegistry:
-    """Authoritative preparation, authorization, and execution boundary."""
+    """Authoritative schema validation, preparation, authorization, and execution boundary."""
 
     def __init__(
         self,
@@ -91,30 +114,22 @@ class ToolRegistry:
         definition = self._definitions.get(tool_name)
         if definition is None:
             return self._rejected("That action is not available.")
-        if not isinstance(arguments, Mapping):
-            return self._rejected("The requested action contained invalid arguments.")
-        required_keys = {definition.argument_name}
-        if set(arguments) != required_keys:
-            return self._rejected("The requested action contained invalid arguments.")
-        value = arguments.get(definition.argument_name)
-        if not isinstance(value, str):
-            return self._rejected("The requested action contained invalid arguments.")
-        if tool_name == "open_folder":
-            value = self._known_folders.resolve(value)
+        validated = self._validate_arguments(definition, arguments)
+        if isinstance(validated, ToolResult):
+            return validated
 
         try:
-            preparation = definition.implementation.prepare(value)
+            preparation = definition.implementation.prepare(validated)
         except Exception:
             logger.exception("Tool preparation failed", extra={"tool_name": tool_name})
             return self._rejected("That action could not be prepared safely.")
         if isinstance(preparation, ToolResult):
             return preparation
-        if not self._valid_preparation(preparation, definition.argument_name):
+        if not self._valid_preparation(preparation, definition):
             return self._rejected("That action could not be prepared safely.")
 
-        normalized_arguments = dict(preparation.normalized_arguments)
         try:
-            summary = definition.confirmation_summary(normalized_arguments).strip()
+            summary = definition.confirmation_summary(preparation.normalized_arguments).strip()
         except Exception:
             logger.exception("Confirmation summary generation failed", extra={"tool_name": tool_name})
             return self._rejected("That action could not be prepared safely.")
@@ -179,6 +194,8 @@ class ToolRegistry:
         definition = self._definitions.get(action.tool_name)
         if definition is None or definition.risk_level is not action.risk_level:
             return self._rejected("The prepared action is invalid.")
+        if not self._is_deeply_immutable(action.execution_value):
+            return self._rejected("The prepared action is invalid.")
         try:
             result = action.executor(action.execution_value)
         except Exception:
@@ -197,16 +214,54 @@ class ToolRegistry:
     def discard_pending_confirmation(self) -> None:
         self._confirmations.discard()
 
-    @staticmethod
-    def _valid_preparation(preparation: object, argument_name: str) -> bool:
+    def _validate_arguments(
+        self,
+        definition: ToolDefinition,
+        arguments: object,
+    ) -> ToolArguments | ToolResult:
+        if not isinstance(arguments, Mapping):
+            return self._rejected("The requested action contained invalid arguments.")
+        supplied = set(arguments)
+        allowed = {argument.name for argument in definition.arguments}
+        required = {argument.name for argument in definition.arguments if argument.required}
+        if not required.issubset(supplied) or not supplied.issubset(allowed):
+            return self._rejected("The requested action contained invalid arguments.")
+
+        values: list[tuple[str, str]] = []
+        for argument in definition.arguments:
+            if argument.name not in arguments:
+                continue
+            value = arguments[argument.name]
+            if not isinstance(value, argument.argument_type.python_type):
+                return self._rejected("The requested action contained invalid arguments.")
+            if argument.resolve_known_folder:
+                value = self._known_folders.resolve(value)
+            values.append((argument.name, value))
+        return ToolArguments(tuple(values))
+
+    @classmethod
+    def _valid_preparation(cls, preparation: object, definition: ToolDefinition) -> bool:
         if not isinstance(preparation, ToolPreparation):
             return False
-        arguments = preparation.normalized_arguments
+        expected = {argument.name for argument in definition.arguments if argument.required}
+        supplied = set(preparation.normalized_arguments)
         return (
-            len(arguments) == 1
-            and arguments[0][0] == argument_name
-            and isinstance(arguments[0][1], str)
+            expected.issubset(supplied)
+            and supplied.issubset({argument.name for argument in definition.arguments})
+            and cls._is_deeply_immutable(preparation.execution_value)
         )
+
+    @classmethod
+    def _is_deeply_immutable(cls, value: object) -> bool:
+        if value is None or isinstance(value, (str, bytes, int, float, bool, Path, Enum)):
+            return True
+        if isinstance(value, tuple):
+            return all(cls._is_deeply_immutable(item) for item in value)
+        if isinstance(value, frozenset):
+            return all(cls._is_deeply_immutable(item) for item in value)
+        if is_dataclass(value) and getattr(type(value), "__dataclass_params__").frozen:
+            return all(cls._is_deeply_immutable(getattr(value, item.name)) for item in fields(value))
+        return False
 
     @staticmethod
     def _default_warning(risk_level: RiskLevel) -> str:
@@ -221,43 +276,120 @@ class ToolRegistry:
         return ToolResult(False, message, RiskLevel.SAFE)
 
 
+def string_argument(
+    name: str,
+    description: str,
+    *,
+    resolve_known_folder: bool = False,
+) -> ToolArgumentDefinition:
+    return ToolArgumentDefinition(name, description, resolve_known_folder=resolve_known_folder)
+
+
 def default_tool_definitions(
     open_app: RegisteredTool,
     open_folder: RegisteredTool,
     open_website: RegisteredTool,
+    *filesystem_tools: RegisteredTool,
 ) -> tuple[ToolDefinition, ...]:
-    return (
+    definitions = [
         ToolDefinition(
-            name="open_app",
-            description=(
-                "Open one allowlisted Windows application by its friendly name. "
-                "Never provide executable paths, arguments, or shell commands."
+            "open_app",
+            "Open one allowlisted Windows application by its friendly name.",
+            (string_argument("app_name", "Allowlisted application name."),),
+            open_app,
+            RiskLevel.SAFE,
+            lambda arguments: f"Open application: {arguments['app_name']}",
+        ),
+        ToolDefinition(
+            "open_folder",
+            "Open one existing local folder.",
+            (
+                string_argument(
+                    "path",
+                    "Existing folder path or known-folder name.",
+                    resolve_known_folder=True,
+                ),
             ),
-            argument_name="app_name",
-            argument_description="Allowlisted application name, such as Spotify or Chrome.",
-            implementation=open_app,
-            risk_level=RiskLevel.SAFE,
-            confirmation_summary=lambda arguments: f"Open application: {arguments['app_name']}",
+            open_folder,
+            RiskLevel.SAFE,
+            lambda arguments: f"Open folder: {arguments['path']}",
         ),
         ToolDefinition(
-            name="open_folder",
-            description=(
-                "Open one existing folder. Use a full user-provided path or one known-folder "
-                "name: Home, Desktop, Documents, Downloads, Music, Pictures, or Videos."
-            ),
-            argument_name="path",
-            argument_description="Existing folder path or an explicitly supported known-folder name.",
-            implementation=open_folder,
-            risk_level=RiskLevel.SAFE,
-            confirmation_summary=lambda arguments: f"Open folder: {arguments['path']}",
+            "open_website",
+            "Open one website using an http or https URL.",
+            (string_argument("url", "A complete http or https URL."),),
+            open_website,
+            RiskLevel.SAFE,
+            lambda arguments: f"Open website: {arguments['url']}",
         ),
-        ToolDefinition(
-            name="open_website",
-            description="Open one website using an http or https URL.",
-            argument_name="url",
-            argument_description="A complete http or https URL. Add https:// to bare domain names.",
-            implementation=open_website,
-            risk_level=RiskLevel.SAFE,
-            confirmation_summary=lambda arguments: f"Open website: {arguments['url']}",
-        ),
+    ]
+    definitions.extend(_filesystem_definition(tool) for tool in filesystem_tools)
+    return tuple(definitions)
+
+
+def _filesystem_definition(tool: RegisteredTool) -> ToolDefinition:
+    path = string_argument(
+        "path",
+        "Local filesystem path or known-folder path.",
+        resolve_known_folder=True,
     )
+    source = string_argument(
+        "source",
+        "Exact existing local source path.",
+        resolve_known_folder=True,
+    )
+    destination = string_argument(
+        "destination",
+        "Exact new local destination path.",
+        resolve_known_folder=True,
+    )
+    if tool.name == "list_folder":
+        return ToolDefinition(
+            tool.name,
+            "List up to 100 direct entries in one existing local folder without recursion.",
+            (path,),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"List folder: {arguments['path']}",
+        )
+    if tool.name == "path_exists":
+        return ToolDefinition(
+            tool.name,
+            "Check whether one local path exists and whether it is a file or folder.",
+            (path,),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Check path: {arguments['path']}",
+        )
+    if tool.name == "create_folder":
+        return ToolDefinition(
+            tool.name,
+            "Create exactly one local folder whose parent already exists.",
+            (path,),
+            tool,
+            RiskLevel.SENSITIVE,
+            lambda arguments: f"Create folder:\n{arguments['path']}",
+        )
+    if tool.name == "rename_path":
+        return ToolDefinition(
+            tool.name,
+            "Rename one existing local file or folder within its current parent directory.",
+            (source, destination),
+            tool,
+            RiskLevel.SENSITIVE,
+            lambda arguments: (
+                f"Rename:\n{arguments['source']}\n→\n{arguments['destination']}"
+            ),
+        )
+    if tool.name == "move_path":
+        return ToolDefinition(
+            tool.name,
+            "Move one local file or folder to an exact destination on the same volume.",
+            (source, destination),
+            tool,
+            RiskLevel.SENSITIVE,
+            lambda arguments: (
+                f"Move:\n{arguments['source']}\n→\n{arguments['destination']}"
+            ),
+        )
+    raise ValueError(f"Unknown filesystem tool definition: {tool.name}")

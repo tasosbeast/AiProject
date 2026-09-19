@@ -25,15 +25,16 @@ from desktop_assistant.intent.provider import (
 logger = logging.getLogger(__name__)
 
 _INSTRUCTIONS = """You route one request for a small Windows desktop assistant.
-Call exactly one provided function. Use open_app, open_folder, or open_website only
-when the request clearly asks for one supported computer action. Never invent tools,
-shell commands, executable paths, arguments, file operations, or multiple actions.
+Call exactly one provided function when the request clearly identifies one supported
+action and every required argument. Never invent tools, shell commands, executable
+paths, missing filesystem paths, arguments, confirmation text, or multiple actions.
 Use respond_conversationally only for short questions about this assistant's identity
-or current capabilities. Use report_unsupported for destructive, sensitive, broad,
-multi-action, or unsupported requests. Never claim an action succeeded; the local
-application executes approved tools. Requests may be English, Greek, Greeklish, or
-mixed. For a bare domain, use https://. For ordinary known folders use exactly Home,
-Desktop, Documents, Downloads, Music, Pictures, or Videos as the path value."""
+or current capabilities. Use report_unsupported for deletion, vague references such
+as 'this file' without an exact path, broad, multi-action, or unsupported requests.
+Never claim an action succeeded; local validation, safety policy, and confirmation
+remain authoritative. Requests may be English, Greek, Greeklish, or mixed. For a bare
+domain, use https://. Known-folder path values may start with Home, Desktop, Documents,
+Downloads, Music, Pictures, or Videos. Preserve explicit source and destination paths."""
 
 _CONTROL_SCHEMAS: tuple[dict[str, Any], ...] = (
     {

@@ -3,6 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from desktop_assistant.config import AppCatalog, AppDefinition
+from desktop_assistant.filesystem import FilesystemPathValidator
+from desktop_assistant.filesystem_tools import (
+    CreateFolderTool,
+    ListFolderTool,
+    MovePathTool,
+    PathExistsTool,
+    RenamePathTool,
+)
 from desktop_assistant.known_folders import KnownFolderResolver
 from desktop_assistant.safety import SafetyPolicy
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
@@ -32,11 +40,17 @@ def make_registry(
     home: Path | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
+    validator = FilesystemPathValidator()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
             OpenFolderTool(launcher),
             OpenWebsiteTool(launcher),
+            ListFolderTool(validator),
+            PathExistsTool(validator),
+            CreateFolderTool(validator),
+            RenamePathTool(validator),
+            MovePathTool(validator),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

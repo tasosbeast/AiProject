@@ -58,3 +58,16 @@ def test_help_lists_supported_commands() -> None:
     assert result.success
     assert "open folder" in result.message
     assert "open website" in result.message
+    assert "list folder" in result.message
+    assert "check path" in result.message
+
+
+def test_routes_safe_filesystem_queries_deterministically(tmp_path) -> None:
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    router = make_router(FakeLauncher())
+
+    listing = router.route(f"list folder {tmp_path}")
+    exists = router.route(f"check path {tmp_path / 'file.txt'}")
+
+    assert listing.success and "file.txt" in listing.message
+    assert exists.success and "file" in exists.message

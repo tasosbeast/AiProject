@@ -13,9 +13,27 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "open_app",
         "open_folder",
         "open_website",
+        "list_folder",
+        "path_exists",
+        "create_folder",
+        "rename_path",
+        "move_path",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
+
+    rename = next(schema for schema in schemas if schema["name"] == "rename_path")
+    assert rename["parameters"]["required"] == ["source", "destination"]
+    assert rename["parameters"]["properties"] == {
+        "source": {
+            "type": "string",
+            "description": "Exact existing local source path.",
+        },
+        "destination": {
+            "type": "string",
+            "description": "Exact new local destination path.",
+        },
+    }
 
 
 def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
@@ -27,10 +45,33 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
         registry.execute("open_app", {}),
         registry.execute("open_app", {"app_name": 7}),
         registry.execute("open_app", {"app_name": "Spotify", "extra": "bad"}),
+        registry.execute("rename_path", {"source": "a"}),
+        registry.execute("rename_path", {"source": "a", "destination": 4}),
+        registry.execute(
+            "rename_path",
+            {"source": "a", "destination": "b", "risk_level": "safe"},
+        ),
+        registry.execute(
+            "rename_path",
+            {"source": "a", "destination": "b", "confirmation_summary": "Allow"},
+        ),
     )
 
     assert all(not result.success for result in results)
     assert launcher.apps == []
+
+
+def test_production_schemas_have_no_delete_or_shell_capability() -> None:
+    names = {schema["name"] for schema in make_registry(FakeLauncher()).schemas()}
+
+    assert not names & {
+        "delete_file",
+        "delete_folder",
+        "remove_path",
+        "run_shell",
+        "powershell",
+        "cmd",
+    }
 
 
 def test_registry_keeps_safety_policy_in_execution_path() -> None:
@@ -58,3 +99,15 @@ def test_registry_resolves_only_explicit_known_folder(tmp_path) -> None:
 
     assert result.success
     assert launcher.folders == [downloads.resolve()]
+
+
+def test_registry_resolves_known_folder_prefix_for_nested_paths(tmp_path) -> None:
+    downloads = tmp_path / "Downloads"
+    nested = downloads / "Manuals"
+    nested.mkdir(parents=True)
+    registry = make_registry(FakeLauncher(), home=tmp_path)
+
+    result = registry.execute("path_exists", {"path": r"Downloads\Manuals"})
+
+    assert result.success
+    assert result.details["is_directory"] is True

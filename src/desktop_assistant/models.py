@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 
@@ -24,11 +25,44 @@ class ToolResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolArguments(Mapping[str, str]):
+    """Ordered, immutable, application-owned tool arguments."""
+
+    values: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        names = tuple(name for name, _value in self.values)
+        if len(names) != len(set(names)) or any(not isinstance(value, str) for _, value in self.values):
+            raise ValueError("Tool arguments must contain unique string values.")
+
+    def __getitem__(self, key: str) -> str:
+        for name, value in self.values:
+            if name == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (name for name, _value in self.values)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    @classmethod
+    def from_mapping(
+        cls,
+        values: Mapping[str, str],
+        order: tuple[str, ...] | None = None,
+    ) -> "ToolArguments":
+        names = order or tuple(values)
+        return cls(tuple((name, values[name]) for name in names))
+
+
+@dataclass(frozen=True, slots=True)
 class ToolPreparation:
     """Side-effect-free, normalized input produced by a trusted tool."""
 
     execution_value: object = field(repr=False)
-    normalized_arguments: tuple[tuple[str, str], ...]
+    normalized_arguments: ToolArguments
 
 
 @dataclass(frozen=True, slots=True)

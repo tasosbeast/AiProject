@@ -6,7 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from desktop_assistant.config import AppCatalog, AppDefinition
 from desktop_assistant.launcher import LaunchError, SystemLauncher
-from desktop_assistant.models import RiskLevel, ToolPreparation, ToolResult
+from desktop_assistant.models import RiskLevel, ToolArguments, ToolPreparation, ToolResult
 
 
 class OpenAppTool:
@@ -17,7 +17,8 @@ class OpenAppTool:
         self._launcher = launcher
         self._catalog = catalog
 
-    def prepare(self, app_name: str) -> ToolPreparation | ToolResult:
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult:
+        app_name = arguments["app_name"]
         app = self._catalog.resolve(app_name)
         if app is None:
             supported = ", ".join(self._catalog.names())
@@ -26,7 +27,7 @@ class OpenAppTool:
                 f"I can only open these applications: {supported}.",
                 self.risk_level,
             )
-        return ToolPreparation(app, (("app_name", app.display_name),))
+        return ToolPreparation(app, ToolArguments((("app_name", app.display_name),)))
 
     def execute(self, prepared_value: object) -> ToolResult:
         if not isinstance(prepared_value, AppDefinition):
@@ -45,7 +46,7 @@ class OpenAppTool:
         )
 
     def run(self, app_name: str) -> ToolResult:
-        prepared = self.prepare(app_name)
+        prepared = self.prepare(ToolArguments((("app_name", app_name),)))
         return prepared if isinstance(prepared, ToolResult) else self.execute(prepared.execution_value)
 
     def _invalid_prepared(self) -> ToolResult:
@@ -60,11 +61,12 @@ class OpenFolderTool:
     def __init__(self, launcher: SystemLauncher) -> None:
         self._launcher = launcher
 
-    def prepare(self, raw_path: str) -> ToolPreparation | ToolResult:
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult:
+        raw_path = arguments["path"]
         path = self._validated_path(raw_path)
         if isinstance(path, ToolResult):
             return path
-        return ToolPreparation(path, (("path", str(path)),))
+        return ToolPreparation(path, ToolArguments((("path", str(path)),)))
 
     def execute(self, prepared_value: object) -> ToolResult:
         if not isinstance(prepared_value, Path):
@@ -86,7 +88,7 @@ class OpenFolderTool:
         )
 
     def run(self, raw_path: str) -> ToolResult:
-        prepared = self.prepare(raw_path)
+        prepared = self.prepare(ToolArguments((("path", raw_path),)))
         return prepared if isinstance(prepared, ToolResult) else self.execute(prepared.execution_value)
 
     def _validated_path(self, raw_path: str) -> Path | ToolResult:
@@ -114,11 +116,12 @@ class OpenWebsiteTool:
     def __init__(self, launcher: SystemLauncher) -> None:
         self._launcher = launcher
 
-    def prepare(self, raw_url: str) -> ToolPreparation | ToolResult:
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult:
+        raw_url = arguments["url"]
         safe_url = self._validated_url(raw_url)
         if isinstance(safe_url, ToolResult):
             return safe_url
-        return ToolPreparation(safe_url, (("url", safe_url),))
+        return ToolPreparation(safe_url, ToolArguments((("url", safe_url),)))
 
     def execute(self, prepared_value: object) -> ToolResult:
         if not isinstance(prepared_value, str):
@@ -138,7 +141,7 @@ class OpenWebsiteTool:
         )
 
     def run(self, raw_url: str) -> ToolResult:
-        prepared = self.prepare(raw_url)
+        prepared = self.prepare(ToolArguments((("url", raw_url),)))
         return prepared if isinstance(prepared, ToolResult) else self.execute(prepared.execution_value)
 
     def _validated_url(self, raw_url: str) -> str | ToolResult:

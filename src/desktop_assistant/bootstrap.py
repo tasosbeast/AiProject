@@ -4,6 +4,14 @@ from dataclasses import dataclass
 
 from desktop_assistant.assistant import Assistant
 from desktop_assistant.config import AppCatalog, Settings, load_settings
+from desktop_assistant.filesystem import FilesystemPathValidator
+from desktop_assistant.filesystem_tools import (
+    CreateFolderTool,
+    ListFolderTool,
+    MovePathTool,
+    PathExistsTool,
+    RenamePathTool,
+)
 from desktop_assistant.intent.provider import IntentProvider
 from desktop_assistant.known_folders import KnownFolderResolver
 from desktop_assistant.launcher import SystemLauncher, WindowsSystemLauncher
@@ -33,11 +41,17 @@ def build_assistant(
     settings = settings or load_settings()
     launcher = launcher or WindowsSystemLauncher()
     catalog = AppCatalog()
+    filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
             OpenFolderTool(launcher),
             OpenWebsiteTool(launcher),
+            ListFolderTool(filesystem_validator),
+            PathExistsTool(filesystem_validator),
+            CreateFolderTool(filesystem_validator),
+            RenamePathTool(filesystem_validator),
+            MovePathTool(filesystem_validator),
         ),
         known_folders=known_folders,
     )

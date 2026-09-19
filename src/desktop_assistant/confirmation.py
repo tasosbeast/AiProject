@@ -8,7 +8,7 @@ from threading import RLock
 from time import monotonic
 from uuid import uuid4
 
-from desktop_assistant.models import ConfirmationRequest, RiskLevel, ToolResult
+from desktop_assistant.models import ConfirmationRequest, RiskLevel, ToolArguments, ToolResult
 
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class PreparedAction:
     """An exact, trusted action that can be executed without re-routing."""
 
     tool_name: str
-    normalized_arguments: tuple[tuple[str, str], ...]
+    normalized_arguments: ToolArguments
     risk_level: RiskLevel
     summary: str
     warning: str

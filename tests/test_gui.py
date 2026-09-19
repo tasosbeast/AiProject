@@ -240,6 +240,26 @@ def test_confirmation_cancel_calls_direct_api_and_returns_ready(qt_app: QApplica
     assert window.command_input.isEnabled()
 
 
+def test_confirmation_card_wraps_multiline_filesystem_summary(qt_app: QApplication) -> None:
+    assistant = ConfirmingAssistant()
+    assistant.request = ConfirmationRequest(
+        assistant.request.confirmation_id,
+        "Rename:\nC:\\Users\\tasos\\Downloads\\draft.txt\n→\n"
+        "C:\\Users\\tasos\\Downloads\\final.txt",
+        RiskLevel.SENSITIVE,
+        assistant.request.warning,
+    )
+    window = make_window(assistant)
+    window.command_input.setPlainText("rename request")
+
+    window.submit_command()
+    wait_until(qt_app, lambda: bool(window.conversation.confirmations))
+    summary = window.conversation.confirmations[-1].findChild(QLabel, "confirmationSummary")
+
+    assert summary.wordWrap()
+    assert "draft.txt\n→\n" in summary.text()
+
+
 def test_core_modules_do_not_import_qt() -> None:
     package_root = __import__("pathlib").Path(__file__).parents[1] / "src" / "desktop_assistant"
     core_modules = (
@@ -253,6 +273,8 @@ def test_core_modules_do_not_import_qt() -> None:
         "bootstrap.py",
         "tool_registry.py",
         "known_folders.py",
+        "filesystem.py",
+        "filesystem_tools.py",
     )
 
     for filename in core_modules:

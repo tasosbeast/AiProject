@@ -13,11 +13,12 @@ from desktop_assistant.models import (
     AssistantResponseKind,
     ConfirmationRequest,
     RiskLevel,
+    ToolArguments,
     ToolPreparation,
     ToolResult,
 )
 from desktop_assistant.router import CommandRouter
-from desktop_assistant.tool_registry import ToolDefinition, ToolRegistry
+from desktop_assistant.tool_registry import ToolDefinition, ToolRegistry, string_argument
 
 
 @dataclass(frozen=True)
@@ -33,11 +34,15 @@ class FakeRiskTool:
         self.valid_at_execution = valid_at_execution
         self.fail = fail
 
-    def prepare(self, value: str) -> ToolPreparation | ToolResult:
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult:
+        value = arguments["target"]
         normalized = value.strip()
         if not normalized or normalized == "invalid":
             return ToolResult(False, "Invalid fake value.", RiskLevel.SAFE)
-        return ToolPreparation(FakePreparedValue(normalized), (("target", normalized),))
+        return ToolPreparation(
+            FakePreparedValue(normalized),
+            ToolArguments((("target", normalized),)),
+        )
 
     def execute(self, prepared_value: object) -> ToolResult:
         if not self.valid_at_execution or not isinstance(prepared_value, FakePreparedValue):
@@ -67,8 +72,7 @@ def make_registry(
     definition = ToolDefinition(
         name="fake_action",
         description="Test-only action.",
-        argument_name="target",
-        argument_description="Test target.",
+        arguments=(string_argument("target", "Test target."),),
         implementation=tool,
         risk_level=risk,
         confirmation_summary=lambda arguments: f"Change exactly: {arguments['target']}",
@@ -296,7 +300,7 @@ def test_fake_tools_never_appear_in_production_schemas() -> None:
     assert "fake_action" not in names
 
 
-def test_all_production_tools_remain_safe() -> None:
+def test_existing_open_tools_remain_safe() -> None:
     from conftest import FakeLauncher
     from desktop_assistant.config import AppCatalog
     from desktop_assistant.tool_registry import default_tool_definitions
