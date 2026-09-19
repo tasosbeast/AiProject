@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from desktop_assistant.assistant import Assistant
 from desktop_assistant.config import AppCatalog, Settings, load_settings
 from desktop_assistant.intent.provider import IntentProvider
@@ -8,9 +10,16 @@ from desktop_assistant.launcher import SystemLauncher, WindowsSystemLauncher
 from desktop_assistant.router import CommandRouter
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
+from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
 
 
 _AUTO_PROVIDER = object()
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceServices:
+    transcription: TranscriptionProvider | None
+    speech: SpeechProvider | None
 
 
 def build_assistant(
@@ -55,3 +64,33 @@ def _build_openai_provider(settings: Settings, registry: ToolRegistry) -> Intent
         timeout_seconds=settings.openai_timeout_seconds,
         max_retries=settings.openai_max_retries,
     )
+
+
+def build_voice_services(settings: Settings | None = None) -> VoiceServices:
+    """Build optional audio providers without making any startup API request."""
+
+    settings = settings or load_settings()
+    if settings.openai_api_key is None:
+        return VoiceServices(None, None)
+
+    from desktop_assistant.voice.openai_audio import (
+        OpenAISpeechProvider,
+        OpenAITranscriptionProvider,
+    )
+
+    transcription = OpenAITranscriptionProvider(
+        api_key=settings.openai_api_key,
+        model=settings.openai_transcribe_model,
+        timeout_seconds=settings.openai_audio_timeout_seconds,
+        max_retries=settings.openai_audio_max_retries,
+    )
+    speech: SpeechProvider | None = None
+    if settings.voice_output_enabled:
+        speech = OpenAISpeechProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_tts_model,
+            voice=settings.openai_tts_voice,
+            timeout_seconds=settings.openai_audio_timeout_seconds,
+            max_retries=settings.openai_audio_max_retries,
+        )
+    return VoiceServices(transcription, speech)

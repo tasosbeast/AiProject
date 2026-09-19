@@ -63,6 +63,13 @@ SUPPORTED_APPS: tuple[AppDefinition, ...] = (
 )
 
 
+def _environment_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() not in {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     log_level: str = "INFO"
@@ -70,6 +77,13 @@ class Settings:
     openai_model: str = "gpt-5.6-luna"
     openai_timeout_seconds: float = 15.0
     openai_max_retries: int = 1
+    openai_transcribe_model: str = "gpt-transcribe"
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "marin"
+    voice_output_enabled: bool = True
+    openai_audio_timeout_seconds: float = 20.0
+    openai_audio_max_retries: int = 1
+    maximum_recording_seconds: int = 60
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -77,6 +91,10 @@ class Settings:
             log_level=os.getenv("ASSISTANT_LOG_LEVEL", "INFO").upper(),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+            openai_transcribe_model=os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe"),
+            openai_tts_model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+            openai_tts_voice=os.getenv("OPENAI_TTS_VOICE", "marin"),
+            voice_output_enabled=_environment_bool("VOICE_OUTPUT_ENABLED", True),
         )
 
 

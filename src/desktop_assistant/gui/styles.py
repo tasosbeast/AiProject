@@ -45,6 +45,10 @@ QLabel#statusDot[state="working"] {
     background-color: #e6b85c;
 }
 
+QLabel#statusDot[state="listening"] {
+    background-color: #ef6f79;
+}
+
 QLabel#statusText {
     color: #96a3b4;
     font-size: 12px;
@@ -150,6 +154,31 @@ QPushButton#sendButton:pressed {
 QPushButton#sendButton:disabled {
     background-color: #2a3544;
     color: #758194;
+}
+
+QPushButton#micButton {
+    background-color: #1b2532;
+    color: #dce5f2;
+    border: 1px solid #344154;
+    border-radius: 10px;
+    padding: 9px 13px;
+    font-weight: 650;
+}
+
+QPushButton#micButton:hover {
+    background-color: #263244;
+}
+
+QPushButton#micButton[recording="true"] {
+    background-color: #8f3442;
+    border-color: #d45b6b;
+    color: #ffffff;
+}
+
+QPushButton#micButton:disabled {
+    background-color: #1a222d;
+    border-color: #273240;
+    color: #697587;
 }
 
 QScrollBar:vertical {

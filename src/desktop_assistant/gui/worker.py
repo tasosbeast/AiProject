@@ -5,9 +5,6 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from desktop_assistant.models import ToolResult
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -16,21 +13,27 @@ class WorkerSignals(QObject):
     failed = Signal()
 
 
-class AssistantWorker(QRunnable):
-    """Runs one assistant request away from the GUI event loop."""
+class BackgroundWorker(QRunnable):
+    """Runs one no-argument operation away from the GUI event loop."""
 
-    def __init__(self, handler: Callable[[str], ToolResult], command: str) -> None:
+    def __init__(self, operation: Callable[[], object]) -> None:
         super().__init__()
-        self._handler = handler
-        self._command = command
+        self._operation = operation
         self.signals = WorkerSignals()
 
     @Slot()
     def run(self) -> None:
         try:
-            result = self._handler(self._command)
+            result = self._operation()
         except Exception:
-            logger.exception("Unexpected error while processing an assistant command")
+            logger.exception("Unexpected error in a background operation")
             self.signals.failed.emit()
         else:
             self.signals.succeeded.emit(result)
+
+
+class AssistantWorker(BackgroundWorker):
+    """Backward-compatible worker for one assistant request."""
+
+    def __init__(self, handler: Callable[[str], object], command: str) -> None:
+        super().__init__(lambda: handler(command))

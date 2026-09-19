@@ -179,3 +179,11 @@ def test_gui_modules_do_not_import_openai() -> None:
 
     for path in gui_root.glob("*.py"):
         assert "openai" not in path.read_text(encoding="utf-8").casefold()
+
+
+def test_cli_does_not_import_voice_or_qt() -> None:
+    package_root = __import__("pathlib").Path(__file__).parents[1] / "src" / "desktop_assistant"
+    cli_source = (package_root / "cli.py").read_text(encoding="utf-8").casefold()
+
+    assert "voice" not in cli_source
+    assert "pyside6" not in cli_source

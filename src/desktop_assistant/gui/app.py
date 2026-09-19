@@ -7,8 +7,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
-from desktop_assistant.bootstrap import build_assistant
+from desktop_assistant.bootstrap import build_assistant, build_voice_services
 from desktop_assistant.config import load_settings
+from desktop_assistant.gui.audio import QtSpeechPlayer, QtVoiceRecorder
 from desktop_assistant.gui.main_window import MainWindow
 from desktop_assistant.gui.styles import DARK_STYLESHEET
 
@@ -32,6 +33,16 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     application = create_application()
-    window = MainWindow(build_assistant(settings=settings))
+    voice_services = build_voice_services(settings)
+    recorder = QtVoiceRecorder(settings.maximum_recording_seconds)
+    player = QtSpeechPlayer() if voice_services.speech is not None else None
+    window = MainWindow(
+        build_assistant(settings=settings),
+        recorder=recorder,
+        transcription_provider=voice_services.transcription,
+        speech_provider=voice_services.speech,
+        speech_player=player,
+        voice_output_enabled=settings.voice_output_enabled,
+    )
     window.show()
     return application.exec()
