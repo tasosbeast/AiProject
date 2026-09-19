@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from desktop_assistant.gui.widgets import CommandInput, ConversationView, MessageKind
 from desktop_assistant.gui.worker import AssistantWorker, BackgroundWorker
-from desktop_assistant.models import ToolResult
+from desktop_assistant.models import AssistantResponse, AssistantResponseKind
 from desktop_assistant.voice.models import AudioRecording, SpeechAudio
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
 
@@ -28,7 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 class AssistantHandler(Protocol):
-    def handle(self, request: str) -> ToolResult: ...
+    def handle(self, request: str) -> AssistantResponse: ...
+
+    def confirm(self, confirmation_id: str) -> AssistantResponse: ...
+
+    def cancel(self, confirmation_id: str) -> AssistantResponse: ...
+
+    def shutdown(self) -> None: ...
 
 
 class VoiceRecorderHandler(Protocol):
@@ -61,6 +67,7 @@ class OperationState(str, Enum):
     TRANSCRIBING = "Transcribing..."
     WORKING = "Working..."
     SPEAKING = "Speaking..."
+    AWAITING_CONFIRMATION = "Confirmation needed"
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +95,7 @@ class MainWindow(QMainWindow):
         self._active_recording: AudioRecording | None = None
         self._state = OperationState.READY
         self._current_request_is_voice = False
+        self._pending_confirmation_id: str | None = None
 
         self.setWindowTitle("AI Assistant")
         self.resize(810, 620)
@@ -252,6 +260,8 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _handle_transcript(self, value: object) -> None:
         self._cleanup_recording()
+        if self._state is not OperationState.TRANSCRIBING:
+            return
         if not isinstance(value, str) or not value.strip():
             self._voice_error("No speech was recognized. Please try again.")
             return
@@ -274,12 +284,27 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _handle_result(self, result: object) -> None:
-        if not isinstance(result, ToolResult):
+        self._active_worker = None
+        if not isinstance(result, AssistantResponse):
             logger.error("Assistant returned an unexpected result type: %s", type(result).__name__)
             self._handle_assistant_failure()
             return
-        kind = MessageKind.ASSISTANT if result.success else MessageKind.ERROR
-        self.conversation.add_message(kind, result.message)
+        if result.kind is AssistantResponseKind.CONFIRMATION_REQUIRED:
+            if result.confirmation is None:
+                self._handle_assistant_failure()
+                return
+            self._pending_confirmation_id = result.confirmation.confirmation_id
+            card = self.conversation.add_confirmation(result.confirmation)
+            card.confirmed.connect(self._confirm_action)
+            card.cancelled.connect(self._cancel_action)
+            self._set_state(OperationState.AWAITING_CONFIRMATION)
+            return
+        if result.result is None:
+            self._handle_assistant_failure()
+            return
+        tool_result = result.result
+        kind = MessageKind.ASSISTANT if tool_result.success else MessageKind.ERROR
+        self.conversation.add_message(kind, tool_result.message)
         if (
             self._current_request_is_voice
             and self._voice_output_enabled
@@ -287,13 +312,44 @@ class MainWindow(QMainWindow):
             and self._speech_player is not None
         ):
             self._set_state(OperationState.SPEAKING)
-            worker = BackgroundWorker(lambda: self._speech_provider.synthesize(result.message))
+            worker = BackgroundWorker(lambda: self._speech_provider.synthesize(tool_result.message))
             worker.signals.succeeded.connect(self._handle_speech_audio)
             worker.signals.failed.connect(self._handle_speech_failure)
             self._active_worker = worker
             self._thread_pool.start(worker)
             return
         self._finish_processing()
+
+    @Slot(str)
+    def _confirm_action(self, confirmation_id: str) -> None:
+        if (
+            self._state is not OperationState.AWAITING_CONFIRMATION
+            or confirmation_id != self._pending_confirmation_id
+        ):
+            return
+        self._pending_confirmation_id = None
+        self._set_state(OperationState.WORKING)
+        worker = BackgroundWorker(lambda: self._assistant.confirm(confirmation_id))
+        worker.signals.succeeded.connect(self._handle_result)
+        worker.signals.failed.connect(self._handle_assistant_failure)
+        self._active_worker = worker
+        self._thread_pool.start(worker)
+
+    @Slot(str)
+    def _cancel_action(self, confirmation_id: str) -> None:
+        if (
+            self._state is not OperationState.AWAITING_CONFIRMATION
+            or confirmation_id != self._pending_confirmation_id
+        ):
+            return
+        self._pending_confirmation_id = None
+        self._current_request_is_voice = False
+        self._set_state(OperationState.WORKING)
+        worker = BackgroundWorker(lambda: self._assistant.cancel(confirmation_id))
+        worker.signals.succeeded.connect(self._handle_result)
+        worker.signals.failed.connect(self._handle_assistant_failure)
+        self._active_worker = worker
+        self._thread_pool.start(worker)
 
     @Slot()
     def _handle_assistant_failure(self) -> None:
@@ -339,6 +395,7 @@ class MainWindow(QMainWindow):
 
     def _finish_processing(self) -> None:
         self._active_worker = None
+        self._pending_confirmation_id = None
         self._current_request_is_voice = False
         self._set_state(OperationState.READY)
         self.command_input.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -370,4 +427,9 @@ class MainWindow(QMainWindow):
         if self._speech_player is not None:
             self._speech_player.stop()
         self._cleanup_recording()
+        self._pending_confirmation_id = None
+        try:
+            self._assistant.shutdown()
+        except Exception:
+            logger.exception("Pending confirmation could not be discarded during shutdown")
         super().closeEvent(event)

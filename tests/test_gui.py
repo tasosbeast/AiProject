@@ -11,11 +11,16 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from desktop_assistant.gui.main_window import MainWindow
 from desktop_assistant.gui.widgets import MessageKind
-from desktop_assistant.models import RiskLevel, ToolResult
+from desktop_assistant.models import (
+    AssistantResponse,
+    ConfirmationRequest,
+    RiskLevel,
+    ToolResult,
+)
 
 
 class FakeAssistant:
@@ -24,11 +29,20 @@ class FakeAssistant:
         self.error = error
         self.calls: list[str] = []
 
-    def handle(self, request: str) -> ToolResult:
+    def handle(self, request: str) -> AssistantResponse:
         self.calls.append(request)
         if self.error is not None:
             raise self.error
-        return self.result
+        return AssistantResponse.completed(self.result)
+
+    def confirm(self, confirmation_id: str) -> AssistantResponse:
+        raise AssertionError("No confirmation expected")
+
+    def cancel(self, confirmation_id: str) -> AssistantResponse:
+        raise AssertionError("No confirmation expected")
+
+    def shutdown(self) -> None:
+        pass
 
 
 class BlockingAssistant(FakeAssistant):
@@ -36,10 +50,37 @@ class BlockingAssistant(FakeAssistant):
         super().__init__()
         self.release = Event()
 
-    def handle(self, request: str) -> ToolResult:
+    def handle(self, request: str) -> AssistantResponse:
         self.calls.append(request)
         self.release.wait(timeout=2)
-        return self.result
+        return AssistantResponse.completed(self.result)
+
+
+class ConfirmingAssistant(FakeAssistant):
+    def __init__(self, risk: RiskLevel = RiskLevel.SENSITIVE) -> None:
+        super().__init__()
+        self.confirm_calls: list[str] = []
+        self.cancel_calls: list[str] = []
+        self.request = ConfirmationRequest(
+            "4b39dbdf8a81479d8d08c026d5f9406f",
+            "Change exactly: A -> B",
+            risk,
+            "Review this exact action.",
+        )
+
+    def handle(self, request: str) -> AssistantResponse:
+        self.calls.append(request)
+        return AssistantResponse.confirmation_required(self.request)
+
+    def confirm(self, confirmation_id: str) -> AssistantResponse:
+        self.confirm_calls.append(confirmation_id)
+        return AssistantResponse.completed(
+            ToolResult(True, "Confirmed action completed.", self.request.risk_level)
+        )
+
+    def cancel(self, confirmation_id: str) -> AssistantResponse:
+        self.cancel_calls.append(confirmation_id)
+        return AssistantResponse.completed(ToolResult(True, "Action cancelled.", RiskLevel.SAFE))
 
 
 @pytest.fixture(scope="module")
@@ -153,6 +194,50 @@ def test_duplicate_submission_is_ignored_while_processing(qt_app: QApplication) 
     wait_until(qt_app, lambda: not window.is_processing)
 
     assert assistant.calls == ["open notepad"]
+
+
+def test_confirmation_card_disables_input_and_calls_confirm_directly(
+    qt_app: QApplication,
+) -> None:
+    assistant = ConfirmingAssistant()
+    window = make_window(assistant)
+    window.command_input.setPlainText("natural sensitive request")
+
+    window.submit_command()
+    wait_until(qt_app, lambda: bool(window.conversation.confirmations))
+
+    card = window.conversation.confirmations[-1]
+    assert card.request.summary == "Change exactly: A -> B"
+    assert card.request.risk_level is RiskLevel.SENSITIVE
+    assert card.findChild(QLabel, "confirmationRisk").text() == "Risk: Sensitive"
+    assert not window.command_input.isEnabled()
+    assert not window.send_button.isEnabled()
+    assert not window.mic_button.isEnabled()
+    card.confirm_button.click()
+    wait_until(qt_app, lambda: not window.is_processing)
+
+    assert assistant.calls == ["natural sensitive request"]
+    assert assistant.confirm_calls == [assistant.request.confirmation_id]
+    assert assistant.cancel_calls == []
+    assert window.conversation.messages[-1].text == "Confirmed action completed."
+    assert window.status_label.text() == "Ready"
+
+
+def test_confirmation_cancel_calls_direct_api_and_returns_ready(qt_app: QApplication) -> None:
+    assistant = ConfirmingAssistant(RiskLevel.DESTRUCTIVE)
+    window = make_window(assistant)
+    window.command_input.setPlainText("natural destructive request")
+    window.submit_command()
+    wait_until(qt_app, lambda: bool(window.conversation.confirmations))
+
+    window.conversation.confirmations[-1].cancel_button.click()
+    wait_until(qt_app, lambda: not window.is_processing)
+
+    assert assistant.calls == ["natural destructive request"]
+    assert assistant.confirm_calls == []
+    assert assistant.cancel_calls == [assistant.request.confirmation_id]
+    assert window.conversation.messages[-1].text == "Action cancelled."
+    assert window.command_input.isEnabled()
 
 
 def test_core_modules_do_not_import_qt() -> None:

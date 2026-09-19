@@ -9,11 +9,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+from desktop_assistant.models import ConfirmationRequest, RiskLevel
 
 
 class MessageKind(str, Enum):
@@ -62,6 +65,64 @@ class MessageBubble(QFrame):
         layout.addWidget(body)
 
 
+class ConfirmationCard(QFrame):
+    """Inline, non-editable presentation of one core-owned confirmation request."""
+
+    confirmed = Signal(str)
+    cancelled = Signal(str)
+
+    def __init__(self, request: ConfirmationRequest, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.request = request
+        self.setObjectName("confirmationCard")
+        self.setProperty("risk", request.risk_level.value)
+        self.setMaximumWidth(590)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(17, 15, 17, 15)
+        layout.setSpacing(9)
+
+        heading = QLabel(
+            "Confirm destructive action"
+            if request.risk_level is RiskLevel.DESTRUCTIVE
+            else "Allow this action?"
+        )
+        heading.setObjectName("confirmationTitle")
+        summary = QLabel(request.summary)
+        summary.setObjectName("confirmationSummary")
+        summary.setTextFormat(Qt.TextFormat.PlainText)
+        summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        summary.setWordWrap(True)
+        risk = QLabel(f"Risk: {request.risk_level.value.title()}")
+        risk.setObjectName("confirmationRisk")
+        warning = QLabel(request.warning)
+        warning.setObjectName("confirmationWarning")
+        warning.setWordWrap(True)
+
+        controls = QHBoxLayout()
+        controls.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.setObjectName("confirmationCancel")
+        confirm = QPushButton("Confirm")
+        confirm.setObjectName("confirmationConfirm")
+        confirm.setProperty("risk", request.risk_level.value)
+        cancel.clicked.connect(lambda: self.cancelled.emit(request.confirmation_id))
+        confirm.clicked.connect(lambda: self.confirmed.emit(request.confirmation_id))
+        controls.addWidget(cancel)
+        controls.addWidget(confirm)
+
+        layout.addWidget(heading)
+        layout.addWidget(summary)
+        layout.addWidget(risk)
+        if request.warning:
+            layout.addWidget(warning)
+        layout.addLayout(controls)
+
+        self.confirm_button = confirm
+        self.cancel_button = cancel
+
+
 class ConversationView(QScrollArea):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -77,6 +138,7 @@ class ConversationView(QScrollArea):
         self.setWidget(self._content)
 
         self.messages: list[MessageBubble] = []
+        self.confirmations: list[ConfirmationCard] = []
         self._welcome = self._create_welcome()
         self._layout.addWidget(self._welcome)
         self._layout.addStretch(1)
@@ -128,6 +190,19 @@ class ConversationView(QScrollArea):
         self.messages.append(bubble)
         QTimer.singleShot(0, self.scroll_to_latest)
         return bubble
+
+    def add_confirmation(self, request: ConfirmationRequest) -> ConfirmationCard:
+        if not self.messages:
+            self._welcome.hide()
+        card = ConfirmationCard(request)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(card)
+        row.addStretch(1)
+        self._layout.insertLayout(self._layout.count() - 1, row)
+        self.confirmations.append(card)
+        QTimer.singleShot(0, self.scroll_to_latest)
+        return card
 
     def scroll_to_latest(self) -> None:
         bar = self.verticalScrollBar()

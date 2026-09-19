@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from desktop_assistant.gui.audio import QtSpeechPlayer, QtVoiceRecorder
 from desktop_assistant.gui.main_window import MainWindow, OperationState
-from desktop_assistant.models import RiskLevel, ToolResult
+from desktop_assistant.models import AssistantResponse, ConfirmationRequest, RiskLevel, ToolResult
 from desktop_assistant.voice.models import AudioRecording, SpeechAudio
 
 
@@ -27,9 +27,40 @@ class FakeAssistant:
         self.calls: list[str] = []
         self.message = message
 
-    def handle(self, request: str) -> ToolResult:
+    def handle(self, request: str) -> AssistantResponse:
         self.calls.append(request)
-        return ToolResult(True, self.message, RiskLevel.SAFE)
+        return AssistantResponse.completed(ToolResult(True, self.message, RiskLevel.SAFE))
+
+    def confirm(self, confirmation_id: str) -> AssistantResponse:
+        raise AssertionError("No confirmation expected")
+
+    def cancel(self, confirmation_id: str) -> AssistantResponse:
+        raise AssertionError("No confirmation expected")
+
+    def shutdown(self) -> None:
+        pass
+
+
+class ConfirmingVoiceAssistant(FakeAssistant):
+    def __init__(self) -> None:
+        super().__init__()
+        self.confirm_calls: list[str] = []
+        self.request = ConfirmationRequest(
+            "6f0690769ab6470eb4f1091405b829e6",
+            "Change exactly: A -> B",
+            RiskLevel.SENSITIVE,
+            "Review this exact action.",
+        )
+
+    def handle(self, request: str) -> AssistantResponse:
+        self.calls.append(request)
+        return AssistantResponse.confirmation_required(self.request)
+
+    def confirm(self, confirmation_id: str) -> AssistantResponse:
+        self.confirm_calls.append(confirmation_id)
+        return AssistantResponse.completed(
+            ToolResult(True, "Confirmed action completed.", RiskLevel.SENSITIVE)
+        )
 
 
 class FakeRecorder(QObject):
@@ -325,6 +356,32 @@ def test_duplicate_recording_result_is_ignored(qt_app: QApplication, tmp_path: P
     assert len(transcriber.calls) == 1
     assert len(assistant.calls) == 1
     assert not second.path.exists()
+
+
+def test_voice_confirmation_does_not_retranscribe_or_accept_spoken_yes(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    recorder = FakeRecorder()
+    transcriber = FakeTranscriber("Κάνε τη δοκιμαστική ενέργεια.")
+    assistant = ConfirmingVoiceAssistant()
+    window = make_window(assistant, recorder, transcriber)
+    window.toggle_recording()
+    window.toggle_recording()
+    recorder.recording_ready.emit(make_recording(tmp_path / "confirmation.wav"))
+    wait_until(qt_app, lambda: bool(window.conversation.confirmations))
+
+    window._handle_transcript("ναι")
+    qt_app.processEvents()
+    assert assistant.confirm_calls == []
+    assert assistant.calls == ["Κάνε τη δοκιμαστική ενέργεια."]
+
+    window.conversation.confirmations[-1].confirm_button.click()
+    wait_until(qt_app, lambda: window.operation_state is OperationState.READY)
+
+    assert len(transcriber.calls) == 1
+    assert assistant.calls == ["Κάνε τη δοκιμαστική ενέργεια."]
+    assert assistant.confirm_calls == [assistant.request.confirmation_id]
 
 
 def test_typed_command_still_uses_original_path(qt_app: QApplication) -> None:

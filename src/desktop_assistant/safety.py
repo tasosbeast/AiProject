@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-from desktop_assistant.models import RiskLevel, ToolResult
+from enum import Enum
+
+from desktop_assistant.models import RiskLevel
+
+
+class AuthorizationDecision(str, Enum):
+    ALLOW = "allow"
+    REQUIRE_CONFIRMATION = "require_confirmation"
+    DENY = "deny"
 
 
 class SafetyPolicy:
-    """Central execution policy for tool risk levels."""
+    """Fail-closed authorization policy for application-owned risk metadata."""
 
-    def authorize(self, risk_level: RiskLevel) -> ToolResult | None:
+    def evaluate(self, risk_level: object) -> AuthorizationDecision:
         if risk_level is RiskLevel.SAFE:
-            return None
-        return ToolResult(
-            False,
-            "This action requires confirmation, which is not available in this version.",
-            risk_level,
-        )
-
+            return AuthorizationDecision.ALLOW
+        if risk_level in {RiskLevel.SENSITIVE, RiskLevel.DESTRUCTIVE}:
+            return AuthorizationDecision.REQUIRE_CONFIRMATION
+        return AuthorizationDecision.DENY

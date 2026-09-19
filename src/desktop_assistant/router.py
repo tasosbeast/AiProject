@@ -5,13 +5,13 @@ from dataclasses import dataclass
 
 from desktop_assistant.config import AppCatalog
 from desktop_assistant.models import RiskLevel, ToolResult
-from desktop_assistant.tool_registry import ToolRegistry
+from desktop_assistant.tool_registry import RegistryOutcome, ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
 class RouteDecision:
     recognized: bool
-    result: ToolResult
+    result: RegistryOutcome
 
 
 class CommandRouter:
@@ -27,7 +27,7 @@ class CommandRouter:
         self._registry = registry
         self._catalog = catalog
 
-    def route(self, command: str) -> ToolResult:
+    def route(self, command: str) -> RegistryOutcome:
         return self.route_detailed(command).result
 
     def route_detailed(self, command: str) -> RouteDecision:

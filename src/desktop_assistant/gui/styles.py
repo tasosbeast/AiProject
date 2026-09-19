@@ -101,6 +101,51 @@ QFrame[messageKind="error"] {
     border-radius: 13px;
 }
 
+QFrame#confirmationCard {
+    background-color: #1d1b17;
+    border: 1px solid #7a6434;
+    border-radius: 13px;
+}
+
+QFrame#confirmationCard[risk="destructive"] {
+    background-color: #24191b;
+    border-color: #9a4f59;
+}
+
+QLabel#confirmationTitle {
+    color: #f5f7fb;
+    font-size: 15px;
+    font-weight: 650;
+}
+
+QLabel#confirmationSummary { color: #edf1f7; }
+QLabel#confirmationRisk { color: #e6b85c; font-weight: 650; }
+QFrame#confirmationCard[risk="destructive"] QLabel#confirmationRisk { color: #ef8b96; }
+QLabel#confirmationWarning { color: #aab4c2; font-size: 12px; }
+
+QPushButton#confirmationCancel,
+QPushButton#confirmationConfirm {
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-weight: 650;
+}
+
+QPushButton#confirmationCancel {
+    background-color: #1b2532;
+    border: 1px solid #344154;
+}
+
+QPushButton#confirmationConfirm {
+    background-color: #b58a3c;
+    color: #10141a;
+    border: none;
+}
+
+QPushButton#confirmationConfirm[risk="destructive"] {
+    background-color: #c75c68;
+    color: #ffffff;
+}
+
 QLabel#messageRole {
     color: #93a1b3;
     font-size: 11px;

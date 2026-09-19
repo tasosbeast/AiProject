@@ -25,6 +25,7 @@ model proposes intent only; it never executes Windows actions.
 - Record a bounded push-to-talk voice command from the Windows microphone.
 - Transcribe primarily Greek speech with natural English technical code-switching.
 - Optionally speak the assistant result without blocking the GUI.
+- Require explicit confirmation for any future sensitive or destructive action.
 - Understand simple English, Greek, Greeklish, and mixed requests when OpenAI is configured.
 - Answer narrow questions about its current identity and capabilities.
 - Show help and exit cleanly.
@@ -40,6 +41,8 @@ It never turns user input into a PowerShell, Command Prompt, or shell command.
 - Multiple computer actions from a single request
 - Arbitrary executable or shell-command execution
 - File creation, modification, deletion, or overwrite
+- Any production sensitive or destructive tool (the architecture is present,
+  but only safe tools are currently registered)
 
 ## Requirements
 
@@ -128,6 +131,34 @@ If no microphone, API key, or speech device is available, typed GUI commands and
 the CLI continue to work. Voice errors appear in the conversation rather than in
 modal dialogs.
 
+### Confirmation and permission model
+
+Every registered tool declares an application-owned risk level:
+
+- `SAFE`: executes after normal registry validation, without a prompt.
+- `SENSITIVE`: is prepared and requires explicit confirmation before execution.
+- `DESTRUCTIVE`: follows the same guarded flow with stronger warning text and
+  visual treatment.
+
+Confirmation authorizes exactly one immutable, already-prepared action. The
+assistant does not call the intent provider again, re-transcribe audio, or
+reconstruct arguments after approval. The model cannot choose a risk level or
+write confirmation text; both come from trusted tool metadata. Invalid actions
+fail before a confirmation is shown, and tools may perform final safety checks
+immediately before execution to reduce time-of-check/time-of-use risk.
+
+Only one confirmation may be pending. It is held in memory for up to two minutes
+using a monotonic timer and is removed after confirmation, cancellation, expiry,
+or application shutdown. Tokens are opaque and single-use; nothing is persisted
+to disk. While a confirmation card is visible, GUI text input and microphone
+capture are disabled. Voice can request an action but cannot authorize it: a
+physical **Confirm** click is required. The CLI displays the exact action and
+risk, then uses a local `Confirm? [y/N]:` prompt; its response is never sent to
+the AI provider.
+
+The current production registry still contains only the three `SAFE` tools.
+Sensitive and destructive behavior is exercised exclusively with test doubles.
+
 > Screenshot placeholder: add a current application screenshot after the visual
 > design is finalized for the first packaged release.
 
@@ -182,14 +213,15 @@ offscreen platform and avoid pixel-perfect assertions.
 ```text
 src/desktop_assistant/
   assistant.py    Application-facing orchestrator
+  confirmation.py In-memory exact-action confirmation manager
   bootstrap.py    Shared production composition for CLI and GUI
   router.py       Deterministic command parsing and dispatch
   tool_registry.py Authoritative schemas, validation, safety, and execution
   tools.py        Explicit open-app, open-folder, and open-website tools
   launcher.py     Windows-only operating-system boundary
   config.py       Central application allowlist and environment settings
-  models.py       Risk levels and structured tool results
-  safety.py       Central policy that gates tools by risk level
+  models.py       Risk levels, interaction responses, and structured tool results
+  safety.py       ALLOW / REQUIRE_CONFIRMATION / DENY policy decisions
   cli.py          Interactive command-line loop
   gui/            Native Qt window, workers, audio adapters, and stylesheet
   intent/         Provider-neutral intent models and isolated OpenAI adapter
@@ -217,12 +249,20 @@ generation, and playback are explicit sequential states. A transcription error
 executes no assistant action; a TTS or playback error cannot undo a completed
 tool action.
 
+Confirmation requests are also core results: GUI and CLI only present them and
+call `Assistant.confirm(id)` or `Assistant.cancel(id)` directly. They never turn
+button clicks or CLI answers into new natural-language requests. Audit-friendly
+logs record the tool name, risk level, shortened correlation ID, and outcome,
+but omit action arguments and secrets.
+
 ## Roadmap
 
-1. Add a confirmation workflow before introducing any sensitive actions.
+1. Add the first narrowly scoped sensitive tool only after defining its
+   preparation, final validation, and trusted confirmation summary.
 2. Add explicitly managed, non-sensitive session preferences without persistent memory.
 3. Improve full-application localization while keeping transcripts faithful.
 4. Package the stable application as a Windows executable.
 
-Any future destructive capability should require an explicit confirmation and
-an audit-friendly record of the requested action.
+Confirmation reduces authorization ambiguity but cannot eliminate every external
+time-of-check/time-of-use change. Future filesystem mutation tools must repeat
+relevant safety checks immediately before their side effect.

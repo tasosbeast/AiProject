@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from desktop_assistant.models import RiskLevel, ToolResult
+from desktop_assistant.models import RiskLevel
+from desktop_assistant.safety import AuthorizationDecision
 
 from conftest import FakeLauncher, make_registry
 
@@ -34,8 +35,8 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
 
 def test_registry_keeps_safety_policy_in_execution_path() -> None:
     class DenyPolicy:
-        def authorize(self, risk_level: RiskLevel) -> ToolResult:
-            return ToolResult(False, "Denied by policy.", risk_level)
+        def evaluate(self, risk_level: RiskLevel) -> AuthorizationDecision:
+            return AuthorizationDecision.DENY
 
     launcher = FakeLauncher()
     registry = make_registry(launcher, safety_policy=DenyPolicy())  # type: ignore[arg-type]
@@ -43,7 +44,7 @@ def test_registry_keeps_safety_policy_in_execution_path() -> None:
     result = registry.execute("open_app", {"app_name": "Spotify"})
 
     assert not result.success
-    assert result.message == "Denied by policy."
+    assert result.message == "That action is not permitted by the safety policy."
     assert launcher.apps == []
 
 

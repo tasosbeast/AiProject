@@ -2,58 +2,103 @@ from __future__ import annotations
 
 import logging
 
-from desktop_assistant.intent.models import IntentKind
+from desktop_assistant.intent.models import IntentKind, IntentResult
 from desktop_assistant.intent.provider import IntentProvider, IntentProviderError
-from desktop_assistant.models import RiskLevel, ToolResult
+from desktop_assistant.models import (
+    AssistantResponse,
+    ConfirmationRequest,
+    RiskLevel,
+    ToolResult,
+)
 from desktop_assistant.router import CommandRouter
-from desktop_assistant.tool_registry import ToolRegistry
+from desktop_assistant.tool_registry import RegistryOutcome, ToolRegistry
+
+
+logger = logging.getLogger(__name__)
 
 
 class Assistant:
-    """Orchestrates deterministic routing and optional natural-language intent."""
+    """Coordinates deterministic routing, optional intent resolution, and confirmation."""
 
     def __init__(
         self,
         router: CommandRouter,
-        registry: ToolRegistry,
+        tool_registry: ToolRegistry,
         intent_provider: IntentProvider | None = None,
     ) -> None:
         self._router = router
-        self._registry = registry
+        self._tool_registry = tool_registry
         self._intent_provider = intent_provider
-        self._logger = logging.getLogger(__name__)
 
-    def handle(self, request: str) -> ToolResult:
-        self._logger.info("Handling request", extra={"request_length": len(request)})
+    def handle(self, request: str) -> AssistantResponse:
+        if self._tool_registry.has_pending_confirmation():
+            return self._completed(
+                ToolResult(
+                    False,
+                    "Confirm or cancel the pending action before starting another request.",
+                    RiskLevel.SAFE,
+                )
+            )
+
         deterministic = self._router.route_detailed(request)
-        if deterministic.recognized or self._intent_provider is None:
-            result = deterministic.result
-        else:
-            result = self._resolve_natural_language(request)
-        self._logger.info(
-            "Request completed",
-            extra={"success": result.success, "risk_level": result.risk_level.value},
-        )
-        return result
+        if deterministic.recognized:
+            return self._response(deterministic.result)
 
-    def _resolve_natural_language(self, request: str) -> ToolResult:
+        if self._intent_provider is None:
+            return self._completed(deterministic.result)
+
         try:
-            intent = self._intent_provider.resolve(request)  # type: ignore[union-attr]
-        except IntentProviderError:
-            self._logger.warning("Natural-language intent routing is unavailable")
-            return self._provider_failure()
+            intent = self._intent_provider.resolve(request)
+        except IntentProviderError as exc:
+            logger.warning("Intent provider unavailable: %s", type(exc).__name__)
+            return self._completed(
+                ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+            )
         except Exception:
-            self._logger.exception("Unexpected intent-provider failure")
-            return self._provider_failure()
+            logger.exception("Unexpected intent provider failure")
+            return self._completed(
+                ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+            )
 
-        if intent.kind is IntentKind.TOOL_ACTION and intent.action is not None:
-            return self._registry.execute(intent.action.tool_name, intent.action.arguments)
-        if intent.kind is IntentKind.CONVERSATION and intent.message:
-            return ToolResult(True, intent.message, RiskLevel.SAFE)
-        if intent.kind is IntentKind.UNSUPPORTED and intent.message:
-            return ToolResult(False, intent.message, RiskLevel.SAFE)
-        return self._provider_failure()
+        return self._response(self._resolve_intent(intent))
+
+    def confirm(self, confirmation_id: str) -> AssistantResponse:
+        """Approve the exact already-prepared action without re-routing it."""
+
+        return self._completed(self._tool_registry.confirm(confirmation_id))
+
+    def cancel(self, confirmation_id: str) -> AssistantResponse:
+        """Cancel and discard one pending action without invoking a provider."""
+
+        return self._completed(self._tool_registry.cancel(confirmation_id))
+
+    def has_pending_confirmation(self) -> bool:
+        return self._tool_registry.has_pending_confirmation()
+
+    def shutdown(self) -> None:
+        """Discard session-only authorization state during application shutdown."""
+
+        self._tool_registry.discard_pending_confirmation()
+
+    def _resolve_intent(self, intent: IntentResult) -> RegistryOutcome:
+        if intent.kind is IntentKind.TOOL_ACTION:
+            if intent.action is None:
+                return ToolResult(False, "The requested action was invalid.", RiskLevel.SAFE)
+            return self._tool_registry.execute(intent.action.tool_name, intent.action.arguments)
+        if intent.kind is IntentKind.CONVERSATION:
+            return ToolResult(True, intent.message or "How can I help?", RiskLevel.SAFE)
+        return ToolResult(
+            False,
+            intent.message or "That action is not supported yet.",
+            RiskLevel.SAFE,
+        )
 
     @staticmethod
-    def _provider_failure() -> ToolResult:
-        return ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+    def _response(outcome: RegistryOutcome) -> AssistantResponse:
+        if isinstance(outcome, ConfirmationRequest):
+            return AssistantResponse.confirmation_required(outcome)
+        return AssistantResponse.completed(outcome)
+
+    @staticmethod
+    def _completed(result: ToolResult) -> AssistantResponse:
+        return AssistantResponse.completed(result)
