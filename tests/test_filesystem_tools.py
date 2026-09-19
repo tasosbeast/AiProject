@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import desktop_assistant.filesystem as filesystem_module
 from desktop_assistant.confirmation import PreparedAction
 from desktop_assistant.filesystem import (
     FilesystemPathValidator,
@@ -159,6 +163,173 @@ def test_protected_location_policy_blocks_sensitive_mutation(tmp_path: Path) -> 
 
     assert isinstance(result, ToolResult) and not result.success
     assert "protected" in result.message.casefold()
+
+
+def test_ordinary_mutation_path_has_no_reparse_false_positive(tmp_path: Path) -> None:
+    target = tmp_path / "ordinary"
+
+    preparation = CreateFolderTool(FilesystemPathValidator()).prepare(
+        ToolArguments((("path", str(target)),))
+    )
+
+    assert not isinstance(preparation, ToolResult)
+
+
+def test_reparse_metadata_detection_uses_python_311_compatible_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFDIR,
+        st_file_attributes=filesystem_module._WINDOWS_REPARSE_POINT_ATTRIBUTE,
+    )
+    monkeypatch.setattr(filesystem_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(filesystem_module.os, "lstat", lambda _path: metadata)
+
+    assert FilesystemPathValidator._is_reparse_point(Path(r"C:\junction"))
+
+
+def test_reparse_detection_does_not_depend_on_path_is_junction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_is_junction(_path: Path) -> bool:
+        raise AssertionError("Path.is_junction() must not be used")
+
+    monkeypatch.setattr(Path, "is_junction", unexpected_is_junction, raising=False)
+
+    assert not FilesystemPathValidator._is_reparse_point(tmp_path)
+
+
+def test_reparse_metadata_inability_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    metadata_without_windows_attributes = SimpleNamespace(st_mode=stat.S_IFDIR)
+    monkeypatch.setattr(filesystem_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        filesystem_module.os,
+        "lstat",
+        lambda _path: metadata_without_windows_attributes,
+    )
+
+    with pytest.raises(FilesystemValidationError, match="validated safely"):
+        FilesystemPathValidator._is_reparse_point(Path(r"C:\ambiguous"))
+
+
+def test_reparse_metadata_error_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def inaccessible(_path: Path) -> os.stat_result:
+        raise PermissionError("test-only metadata failure")
+
+    monkeypatch.setattr(filesystem_module.os, "lstat", inaccessible)
+
+    with pytest.raises(FilesystemValidationError, match="validated safely"):
+        FilesystemPathValidator._is_reparse_point(Path(r"C:\inaccessible"))
+
+
+@pytest.mark.parametrize("chain", ("source", "destination"))
+def test_reparse_point_in_mutation_chain_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    chain: str,
+) -> None:
+    source_parent = tmp_path / "source"
+    destination_parent = tmp_path / "destination"
+    source_parent.mkdir()
+    destination_parent.mkdir()
+    source = source_parent / "file.txt"
+    source.write_text("data", encoding="utf-8")
+    destination = destination_parent / "file.txt"
+    marked_component = source_parent if chain == "source" else destination_parent
+    original_lstat = os.lstat
+
+    def marked_lstat(path: os.PathLike[str] | str) -> os.stat_result | SimpleNamespace:
+        metadata = original_lstat(path)
+        if Path(path) == marked_component:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_file_attributes=(
+                    getattr(metadata, "st_file_attributes", 0)
+                    | filesystem_module._WINDOWS_REPARSE_POINT_ATTRIBUTE
+                ),
+            )
+        return metadata
+
+    monkeypatch.setattr(filesystem_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(filesystem_module.os, "lstat", marked_lstat)
+    result = MovePathTool(FilesystemPathValidator()).prepare(
+        ToolArguments(
+            (("source", str(source)), ("destination", str(destination)))
+        )
+    )
+
+    assert isinstance(result, ToolResult) and not result.success
+    assert "symbolic link or junction" in result.message
+
+
+@pytest.mark.parametrize("chain", ("source", "destination"))
+def test_real_symbolic_link_in_mutation_chain_is_rejected(
+    tmp_path: Path,
+    chain: str,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Creating a symbolic link is unavailable: {type(exc).__name__}")
+
+    source = target / "source.txt"
+    source.write_text("data", encoding="utf-8")
+    destination_parent = tmp_path / "destination"
+    destination_parent.mkdir()
+    if chain == "source":
+        source = link / "source.txt"
+        destination = destination_parent / "source.txt"
+    else:
+        destination = link / "destination.txt"
+
+    result = MovePathTool(FilesystemPathValidator()).prepare(
+        ToolArguments(
+            (("source", str(source)), ("destination", str(destination)))
+        )
+    )
+
+    assert isinstance(result, ToolResult) and not result.success
+    assert "symbolic link or junction" in result.message
+
+
+@pytest.mark.parametrize(
+    "root",
+    ("C:\\", "D:\\", "E:/", "D:\\."),
+)
+@pytest.mark.skipif(os.name != "nt", reason="Windows drive-root semantics")
+def test_every_windows_drive_root_is_protected_without_drive_discovery(root: str) -> None:
+    policy = FilesystemSafetyPolicy((), ())
+
+    assert policy.is_drive_root(Path(root))
+    assert policy.is_protected(Path(root))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+def test_drive_root_policy_does_not_block_ordinary_user_profile_path() -> None:
+    policy = FilesystemSafetyPolicy((), ())
+
+    assert not policy.is_drive_root(Path(r"C:\Users\example\Documents"))
+    assert not policy.is_protected(Path(r"C:\Users\example\Documents"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows protected-location semantics")
+def test_windows_program_files_and_program_data_trees_remain_protected() -> None:
+    policy = FilesystemSafetyPolicy(
+        (
+            Path(r"C:\Windows"),
+            Path(r"C:\Program Files"),
+            Path(r"C:\ProgramData"),
+        ),
+        (),
+    )
+
+    assert policy.is_protected(Path(r"C:\Windows\System32"))
+    assert policy.is_protected(Path(r"C:\Program Files\Application"))
+    assert policy.is_protected(Path(r"C:\ProgramData\Application"))
 
 
 @pytest.mark.parametrize(

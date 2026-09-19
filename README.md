@@ -173,8 +173,12 @@ The production filesystem capability pack is intentionally narrow:
 | `move_path` | SENSITIVE | Yes | Moves to another folder on the same volume. |
 
 All mutation tools reject destination collisions, directory merges, device/UNC
-paths, symlinks or junctions in the mutation path, and protected Windows,
-Program Files, ProgramData, or drive-root locations. They never overwrite.
+paths, and any symbolic link, junction, mount point, or other Windows reparse
+point in a mutation-relevant existing path chain. Reparse metadata is inspected
+directly with the Python standard library, including on supported Python 3.11
+runtimes. Every Windows drive root is protected independently of the system
+drive, and Windows, Program Files, and ProgramData trees remain protected. The
+normal user-profile folders remain usable. Mutation tools never overwrite.
 Deletion remains completely unsupported, and no production filesystem tool is
 classified `DESTRUCTIVE` in this milestone.
 
@@ -280,11 +284,13 @@ identity records, strings, and tuples; mutable dictionaries and lists are reject
 by the registry before a confirmation can be created.
 
 Before confirmed execution, mutation tools revalidate protected locations,
-source identity, destination absence, destination-parent identity, operation
-semantics, and volume. Rename and move use `os.rename` on the Windows target and
-never use `shutil.move`, so cross-volume copy-plus-delete behavior is refused.
-These checks reduce, but cannot completely eliminate, filesystem TOCTOU races or
-all Windows reparse-point behavior; ambiguous or unsupported cases fail closed.
+reparse-free source and destination-parent chains, source identity, destination
+absence, destination-parent identity, operation semantics, and volume. Rename
+and move use `os.rename` on the Windows target and never use `shutil.move`, so
+cross-volume copy-plus-delete behavior is refused. Unexpected errors or missing
+Windows reparse metadata fail closed for sensitive validation. These checks
+reduce, but cannot completely eliminate, Windows filesystem TOCTOU races between
+the final validation and the operating-system mutation.
 
 Voice capture and playback use PySide6 Qt Multimedia, so no separate native
 microphone framework is required. Transcription, assistant execution, TTS

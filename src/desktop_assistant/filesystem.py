@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
 
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_REPARSE_POINT_ATTRIBUTE = getattr(
+    stat,
+    "FILE_ATTRIBUTE_REPARSE_POINT",
+    0x0400,
+)
+
+
 class FilesystemValidationError(ValueError):
     """A concise, user-safe filesystem validation failure."""
 
@@ -46,10 +54,25 @@ class FilesystemSafetyPolicy:
         return cls(trees, tuple(cls._resolved(path) for path in drive_roots))
 
     def is_protected(self, path: Path) -> bool:
+        if self.is_drive_root(path):
+            return True
         normalized = self._resolved(path)
+        if self.is_drive_root(normalized):
+            return True
         if any(normalized == root or normalized.parent == root for root in self.protected_exact):
             return True
         return any(normalized == root or root in normalized.parents for root in self.protected_trees)
+
+    @staticmethod
+    def is_drive_root(path: Path) -> bool:
+        """Return whether *path* is any absolute Windows drive root."""
+
+        windows_path = PureWindowsPath(str(path).replace("/", "\\"))
+        return bool(
+            windows_path.drive
+            and windows_path.root
+            and windows_path == PureWindowsPath(windows_path.anchor)
+        )
 
     @staticmethod
     def _resolved(path: Path) -> Path:
@@ -96,7 +119,10 @@ class FilesystemPathValidator:
         if os.path.lexists(lexical):
             raise FilesystemValidationError("Destination already exists.")
         parent_lexical = lexical.parent
-        self._reject_reparse_chain(parent_lexical)
+        try:
+            self._reject_reparse_chain(parent_lexical)
+        except FileNotFoundError as exc:
+            raise FilesystemValidationError("Destination parent does not exist.") from exc
         try:
             parent = parent_lexical.resolve(strict=True)
         except (OSError, RuntimeError) as exc:
@@ -135,7 +161,10 @@ class FilesystemPathValidator:
     def _existing(self, raw_path: str, *, mutation: bool) -> Path:
         lexical = self._lexical(raw_path, require_absolute=mutation)
         if mutation:
-            self._reject_reparse_chain(lexical)
+            try:
+                self._reject_reparse_chain(lexical)
+            except FileNotFoundError as exc:
+                raise FilesystemValidationError("Source path does not exist.") from exc
         try:
             return lexical.resolve(strict=True)
         except (OSError, RuntimeError) as exc:
@@ -192,22 +221,40 @@ class FilesystemPathValidator:
             raise FilesystemValidationError("This protected system location cannot be modified.")
 
     def _reject_reparse_chain(self, path: Path) -> None:
+        chain: list[Path] = []
         current = path
         while True:
-            if os.path.lexists(current) and self._is_reparse_point(current):
-                raise FilesystemValidationError(
-                    "Symbolic links and junctions are not supported for mutations."
-                )
+            chain.append(current)
             if current == current.parent:
                 break
             current = current.parent
 
-    @staticmethod
-    def _is_reparse_point(path: Path) -> bool:
+        for current in reversed(chain):
+            if self._is_reparse_point(current):
+                raise FilesystemValidationError(
+                    "This filesystem path contains a symbolic link or junction "
+                    "and cannot be modified safely."
+                )
+
+    @classmethod
+    def _is_reparse_point(cls, path: Path) -> bool:
         try:
-            if path.is_symlink():
-                return True
-            is_junction = getattr(path, "is_junction", None)
-            return bool(is_junction and is_junction())
-        except OSError:
+            metadata = os.lstat(path)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            raise FilesystemValidationError(
+                "The filesystem path could not be validated safely."
+            ) from exc
+
+        if stat.S_ISLNK(metadata.st_mode):
             return True
+        if not _IS_WINDOWS:
+            return False
+
+        attributes = getattr(metadata, "st_file_attributes", None)
+        if attributes is None:
+            raise FilesystemValidationError(
+                "The filesystem path could not be validated safely."
+            )
+        return bool(attributes & _WINDOWS_REPARSE_POINT_ATTRIBUTE)
