@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication
 from desktop_assistant.bootstrap import build_assistant, build_voice_services
 from desktop_assistant.config import load_settings
 from desktop_assistant.gui.audio import QtSpeechPlayer, QtVoiceRecorder
+from desktop_assistant.gui.hotkey import WindowsGlobalHotkeyController
+from desktop_assistant.gui.lifecycle import DesktopLifecycleController
 from desktop_assistant.gui.main_window import MainWindow
 from desktop_assistant.gui.styles import DARK_STYLESHEET
 
@@ -44,5 +46,17 @@ def main() -> int:
         speech_player=player,
         voice_output_enabled=settings.voice_output_enabled,
     )
+    hotkey = None
+    try:
+        hotkey = WindowsGlobalHotkeyController(application, settings.global_hotkey)
+    except ValueError:
+        logging.getLogger(__name__).warning("Invalid GLOBAL_HOTKEY configuration; hotkey disabled")
+    lifecycle = DesktopLifecycleController(
+        application,
+        window,
+        tray_enabled=settings.system_tray_enabled,
+        hotkey=hotkey,
+    )
+    lifecycle.start()
     window.show()
     return application.exec()

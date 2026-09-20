@@ -13,6 +13,8 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "open_app",
         "open_folder",
         "open_website",
+        "app_status",
+        "close_app",
         "list_folder",
         "path_exists",
         "create_folder",

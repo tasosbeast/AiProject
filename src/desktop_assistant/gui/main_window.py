@@ -96,6 +96,9 @@ class MainWindow(QMainWindow):
         self._state = OperationState.READY
         self._current_request_is_voice = False
         self._pending_confirmation_id: str | None = None
+        self._hide_on_close = False
+        self._force_close = False
+        self._shutdown_complete = False
 
         self.setWindowTitle("AI Assistant")
         self.resize(810, 620)
@@ -121,6 +124,56 @@ class MainWindow(QMainWindow):
     @property
     def operation_state(self) -> OperationState:
         return self._state
+
+    def set_hide_on_close(self, enabled: bool) -> None:
+        self._hide_on_close = enabled
+
+    @Slot()
+    def show_and_focus(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        self.command_input.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+
+    @Slot()
+    def hide_to_tray(self) -> None:
+        if self._state is OperationState.LISTENING:
+            try:
+                if self._recorder is not None:
+                    self._recorder.cancel()
+            except Exception:
+                logger.exception("Microphone could not be cancelled while hiding")
+            self._cleanup_recording()
+            self._current_request_is_voice = False
+            self._set_state(OperationState.READY)
+        self.hide()
+
+    def prepare_for_quit(self) -> None:
+        self._force_close = True
+
+    def perform_shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
+        if self._recorder is not None:
+            try:
+                self._recorder.cancel()
+            except Exception:
+                logger.exception("Microphone could not be cancelled during shutdown")
+        if self._speech_player is not None:
+            try:
+                self._speech_player.stop()
+            except Exception:
+                logger.exception("Speech playback could not be stopped during shutdown")
+        self._cleanup_recording()
+        self._pending_confirmation_id = None
+        try:
+            self._assistant.shutdown()
+        except Exception:
+            logger.exception("Pending confirmation could not be discarded during shutdown")
 
     def _build_ui(self) -> QWidget:
         root = QWidget()
@@ -422,14 +475,9 @@ class MainWindow(QMainWindow):
         self.status_dot.style().polish(self.status_dot)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
-        if self._recorder is not None:
-            self._recorder.cancel()
-        if self._speech_player is not None:
-            self._speech_player.stop()
-        self._cleanup_recording()
-        self._pending_confirmation_id = None
-        try:
-            self._assistant.shutdown()
-        except Exception:
-            logger.exception("Pending confirmation could not be discarded during shutdown")
+        if self._hide_on_close and not self._force_close:
+            event.ignore()
+            self.hide_to_tray()
+            return
+        self.perform_shutdown()
         super().closeEvent(event)

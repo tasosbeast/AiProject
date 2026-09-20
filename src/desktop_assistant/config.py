@@ -20,6 +20,8 @@ class AppDefinition:
     display_name: str
     aliases: tuple[str, ...]
     targets: tuple[LaunchTarget, ...]
+    process_names: tuple[str, ...] = ()
+    can_close: bool = False
 
 
 SUPPORTED_APPS: tuple[AppDefinition, ...] = (
@@ -32,6 +34,8 @@ SUPPORTED_APPS: tuple[AppDefinition, ...] = (
             LaunchTarget("executable", r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
             LaunchTarget("executable", r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
         ),
+        process_names=("chrome.exe",),
+        can_close=True,
     ),
     AppDefinition(
         display_name="Spotify",
@@ -40,6 +44,8 @@ SUPPORTED_APPS: tuple[AppDefinition, ...] = (
             LaunchTarget("executable", r"%APPDATA%\Spotify\Spotify.exe"),
             LaunchTarget("uri", "spotify:"),
         ),
+        process_names=("spotify.exe",),
+        can_close=True,
     ),
     AppDefinition(
         display_name="VS Code",
@@ -49,16 +55,22 @@ SUPPORTED_APPS: tuple[AppDefinition, ...] = (
             LaunchTarget("executable", "code"),
             LaunchTarget("executable", r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
         ),
+        process_names=("code.exe",),
+        can_close=True,
     ),
     AppDefinition(
         display_name="File Explorer",
         aliases=("file explorer", "explorer", "windows explorer"),
         targets=(LaunchTarget("executable", "explorer.exe"),),
+        process_names=("explorer.exe",),
+        can_close=False,
     ),
     AppDefinition(
         display_name="Notepad",
         aliases=("notepad",),
         targets=(LaunchTarget("executable", "notepad.exe"),),
+        process_names=("notepad.exe",),
+        can_close=True,
     ),
 )
 
@@ -84,6 +96,8 @@ class Settings:
     openai_audio_timeout_seconds: float = 20.0
     openai_audio_max_retries: int = 1
     maximum_recording_seconds: int = 60
+    system_tray_enabled: bool = True
+    global_hotkey: str = "Ctrl+Alt+Space"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -95,6 +109,8 @@ class Settings:
             openai_tts_model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
             openai_tts_voice=os.getenv("OPENAI_TTS_VOICE", "marin"),
             voice_output_enabled=_environment_bool("VOICE_OUTPUT_ENABLED", True),
+            system_tray_enabled=_environment_bool("SYSTEM_TRAY_ENABLED", True),
+            global_hotkey=os.getenv("GLOBAL_HOTKEY", "Ctrl+Alt+Space"),
         )
 
 

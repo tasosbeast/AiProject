@@ -22,6 +22,8 @@ class CommandRouter:
     _folder = re.compile(r"^open\s+folder\s+(.+)$", re.IGNORECASE)
     _list_folder = re.compile(r"^list\s+folder\s+(.+)$", re.IGNORECASE)
     _check_path = re.compile(r"^(?:check\s+path|path\s+exists)\s+(.+)$", re.IGNORECASE)
+    _app_status = re.compile(r"^(?:check\s+app|app\s+status)\s+(.+?)\s*$", re.IGNORECASE)
+    _close_app = re.compile(r"^close\s+app\s+(.+?)\s*$", re.IGNORECASE)
     _explicit_app = re.compile(r"^open\s+app\s+(.+?)\s*$", re.IGNORECASE)
     _simple_app = re.compile(r"^open\s+(.+?)\s*$", re.IGNORECASE)
 
@@ -80,6 +82,20 @@ class CommandRouter:
                 self._registry.execute("path_exists", {"path": match.group(1)}),
             )
 
+        match = self._app_status.fullmatch(text)
+        if match:
+            return RouteDecision(
+                True,
+                self._registry.execute("app_status", {"app_name": match.group(1)}),
+            )
+
+        match = self._close_app.fullmatch(text)
+        if match:
+            return RouteDecision(
+                True,
+                self._registry.execute("close_app", {"app_name": match.group(1)}),
+            )
+
         match = self._explicit_app.fullmatch(text)
         if match:
             return RouteDecision(
@@ -124,6 +140,8 @@ class CommandRouter:
             "  open folder <existing path>\n"
             "  list folder <existing path>\n"
             "  check path <path>\n"
+            "  check app <Chrome|Spotify|VS Code|File Explorer|Notepad>\n"
+            "  close app <Chrome|Spotify|VS Code|Notepad>\n"
             "  open website <http-or-https URL>\n"
             "  help\n"
             "  exit"

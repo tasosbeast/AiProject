@@ -26,6 +26,10 @@ model proposes intent only; it never executes Windows actions.
 - Create exactly one folder after explicit confirmation.
 - Rename a file or folder within its current directory after confirmation.
 - Move a file or folder to another directory on the same volume after confirmation.
+- Check whether an allowlisted application is currently running.
+- Request a graceful close of allowlisted application windows after confirmation.
+- Remain available in the Windows system tray when the main window is hidden.
+- Show, restore, and focus the assistant with `Ctrl+Alt+Space`.
 - Accept commands through a native, responsive PySide6 desktop interface.
 - Record a bounded push-to-talk voice command from the Windows microphone.
 - Transcribe primarily Greek speech with natural English technical code-switching.
@@ -49,6 +53,8 @@ It never turns user input into a PowerShell, Command Prompt, or shell command.
 - File or folder deletion, recursive removal, or recycle-bin operations
 - Copying files or cross-volume moves
 - Overwriting or merging existing destinations
+- Force-killing processes, accepting arbitrary PIDs, or closing the Explorer shell
+- Starting automatically with Windows
 
 ## Requirements
 
@@ -76,6 +82,8 @@ OPENAI_TRANSCRIBE_MODEL=gpt-transcribe
 OPENAI_TTS_MODEL=gpt-4o-mini-tts
 OPENAI_TTS_VOICE=marin
 VOICE_OUTPUT_ENABLED=true
+SYSTEM_TRAY_ENABLED=true
+GLOBAL_HOTKEY=Ctrl+Alt+Space
 ASSISTANT_LOG_LEVEL=INFO
 ```
 
@@ -116,6 +124,28 @@ python -m desktop_assistant.gui
 The GUI uses a background Qt worker for command processing, so the window stays
 responsive while the shared assistant core runs. Conversation history exists
 only for the current session.
+
+### System tray and global shortcut
+
+When `SYSTEM_TRAY_ENABLED=true` and Windows reports that a system tray is
+available, the normal window **X** hides the assistant instead of exiting. The
+tray menu contains **Show Assistant**, **Hide Assistant**, and **Quit**. Only
+explicit **Quit** stops microphone recording and speech playback, removes
+temporary audio, discards a pending confirmation, unregisters the global
+hotkey, and exits the process. A pending confirmation otherwise remains visible
+after hide/show until it is answered or expires normally.
+
+The default global shortcut is `Ctrl+Alt+Space`, configurable with
+`GLOBAL_HOTKEY`. It only shows/restores the window, brings it forward, and
+focuses the command input. It never starts the microphone, executes a command,
+or contacts OpenAI. If Windows cannot register the shortcut because it is
+invalid or already owned, the GUI, tray, typed input, and microphone continue
+working without retrying in a loop. Hiding while actively listening cancels the
+recording so the microphone never continues invisibly; already-started
+transcription, assistant work, and TTS may finish normally.
+
+If the system tray is unavailable or disabled, the normal window close exits
+cleanly. Startup-with-Windows is intentionally not implemented.
 
 ### Push-to-talk workflow
 
@@ -182,6 +212,22 @@ normal user-profile folders remain usable. Mutation tools never overwrite.
 Deletion remains completely unsupported, and no production filesystem tool is
 classified `DESTRUCTIVE` in this milestone.
 
+Application process control is also deliberately narrow:
+
+| Tool | Risk | Confirmation | Behavior |
+| --- | --- | --- | --- |
+| `app_status` | SAFE | No | Reports only whether a catalog application is running. |
+| `close_app` | SENSITIVE | Yes | Sends `WM_CLOSE` to all visible top-level windows owned by the catalog application's trusted process names. |
+
+The application catalog owns immutable process-name metadata. Neither users nor
+the model can provide PIDs, executable paths, process names, window handles, or
+a force flag. `close_app` is equivalent to asking the application's windows to
+close normally, so save prompts and an application's refusal to close remain
+authoritative. Its trusted confirmation warns about unsaved work and identifies
+the exact catalog application. File Explorer may be checked with `app_status`
+but cannot be closed because `explorer.exe` also hosts the Windows desktop shell.
+There is no force kill, `taskkill`, PowerShell, CMD, or generic process API.
+
 > Screenshot placeholder: add a current application screenshot after the visual
 > design is finalized for the first packaged release.
 
@@ -208,6 +254,8 @@ open app notepad
 open folder C:\Users\YourName\Documents
 list folder Downloads
 check path C:\Users\YourName\Downloads\manual.pdf
+check app spotify
+close app notepad
 open website https://www.python.org
 help
 exit
@@ -226,6 +274,8 @@ Rename C:\Users\YourName\Downloads\draft.txt to C:\Users\YourName\Downloads\fina
 Move C:\Users\YourName\Downloads\manual.pdf to C:\Users\YourName\Documents\manual.pdf.
 Φτιάξε έναν φάκελο Projects στο Desktop.
 Τι έχει μέσα ο φάκελος Downloads;
+Τρέχει το Spotify;
+Κλείσε το Notepad.
 ```
 
 ## Tests
@@ -246,6 +296,8 @@ src/desktop_assistant/
   confirmation.py In-memory exact-action confirmation manager
   filesystem.py  Shared path validation and protected-location policy
   filesystem_tools.py Safe queries and confirmed filesystem mutations
+  app_tools.py   Allowlisted status and confirmed graceful-close tools
+  process_control.py Narrow Toolhelp/EnumWindows/WM_CLOSE boundary
   bootstrap.py    Shared production composition for CLI and GUI
   router.py       Deterministic command parsing and dispatch
   tool_registry.py Authoritative schemas, validation, safety, and execution
@@ -255,7 +307,7 @@ src/desktop_assistant/
   models.py       Risk levels, interaction responses, and structured tool results
   safety.py       ALLOW / REQUIRE_CONFIRMATION / DENY policy decisions
   cli.py          Interactive command-line loop
-  gui/            Native Qt window, workers, audio adapters, and stylesheet
+  gui/            Native Qt window, lifecycle/tray, hotkey, workers, audio, and stylesheet
   intent/         Provider-neutral intent models and isolated OpenAI adapter
   voice/          Audio models, provider contracts, and isolated OpenAI audio adapter
 ```
@@ -306,9 +358,9 @@ but omit action arguments and secrets.
 
 ## Roadmap
 
-1. Review the filesystem capability pack and its protected-location policy.
-2. Design deletion separately with recycle-bin semantics and stronger destructive confirmation.
-3. Add explicitly managed, non-sensitive session preferences without persistent memory.
+1. Stabilize tray and global-hotkey behavior across packaged Windows builds.
+2. Add explicit, opt-in startup-with-Windows during the packaging milestone.
+3. Design deletion separately with recycle-bin semantics and stronger destructive confirmation.
 4. Improve full-application localization while keeping transcripts faithful.
 
 Confirmation reduces authorization ambiguity but cannot eliminate every external

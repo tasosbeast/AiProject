@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from desktop_assistant.app_tools import AppStatusTool, CloseAppTool
 from desktop_assistant.assistant import Assistant
 from desktop_assistant.config import AppCatalog
 from desktop_assistant.filesystem import FilesystemPathValidator
@@ -21,7 +22,7 @@ from desktop_assistant.router import CommandRouter
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
-from conftest import FakeLauncher
+from conftest import FakeLauncher, FakeProcessController
 
 
 class FakeProvider:
@@ -43,14 +44,18 @@ def make_assistant(
     provider: FakeProvider | None,
     *,
     home: Path | None = None,
+    process_controller: FakeProcessController | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
+    process_controller = process_controller or FakeProcessController()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
             OpenFolderTool(launcher),
             OpenWebsiteTool(launcher),
+            AppStatusTool(catalog, process_controller),
+            CloseAppTool(catalog, process_controller),
             ListFolderTool(validator),
             PathExistsTool(validator),
             CreateFolderTool(validator),
@@ -223,3 +228,38 @@ def test_natural_safe_filesystem_query_does_not_prompt(tmp_path: Path) -> None:
 
     assert response.success
     assert response.confirmation is None
+
+
+@pytest.mark.parametrize(
+    "user_request",
+    ("Τρέχει το Spotify;", "Trexei to Spotify?", "Is Spotify running?"),
+)
+def test_natural_app_status_uses_safe_registered_tool(user_request: str) -> None:
+    provider = FakeProvider(IntentResult.tool_action("app_status", {"app_name": "Spotify"}))
+    controller = FakeProcessController({"Spotify"})
+    assistant = make_assistant(
+        FakeLauncher(), provider, process_controller=controller
+    )
+
+    response = assistant.handle(user_request)
+
+    assert response.success
+    assert response.confirmation is None
+    assert response.message == "Spotify is running."
+    assert provider.calls == [user_request]
+
+
+def test_natural_close_app_calls_provider_once_across_confirmation() -> None:
+    provider = FakeProvider(IntentResult.tool_action("close_app", {"app_name": "Notepad"}))
+    controller = FakeProcessController({"Notepad"})
+    assistant = make_assistant(
+        FakeLauncher(), provider, process_controller=controller
+    )
+
+    response = assistant.handle("Κλείσε το Notepad.")
+    assert response.confirmation is not None
+    result = assistant.confirm(response.confirmation.confirmation_id)
+
+    assert result.success
+    assert provider.calls == ["Κλείσε το Notepad."]
+    assert [app.display_name for app in controller.close_calls] == ["Notepad"]

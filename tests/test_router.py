@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from desktop_assistant.config import AppCatalog
 from desktop_assistant.router import CommandRouter
-from conftest import FakeLauncher, make_registry
+from desktop_assistant.models import ConfirmationRequest, ToolResult
+from conftest import FakeLauncher, FakeProcessController, make_registry
 
 
-def make_router(launcher: FakeLauncher) -> CommandRouter:
-    return CommandRouter(make_registry(launcher), AppCatalog())
+def make_router(
+    launcher: FakeLauncher,
+    process_controller: FakeProcessController | None = None,
+) -> CommandRouter:
+    return CommandRouter(
+        make_registry(launcher, process_controller=process_controller),
+        AppCatalog(),
+    )
 
 
 def test_routes_application_alias_case_insensitively() -> None:
@@ -60,6 +67,8 @@ def test_help_lists_supported_commands() -> None:
     assert "open website" in result.message
     assert "list folder" in result.message
     assert "check path" in result.message
+    assert "check app" in result.message
+    assert "close app" in result.message
 
 
 def test_routes_safe_filesystem_queries_deterministically(tmp_path) -> None:
@@ -71,3 +80,22 @@ def test_routes_safe_filesystem_queries_deterministically(tmp_path) -> None:
 
     assert listing.success and "file.txt" in listing.message
     assert exists.success and "file" in exists.message
+
+
+def test_routes_app_status_and_close_app_deterministically() -> None:
+    controller = FakeProcessController({"Spotify"})
+    router = make_router(FakeLauncher(), controller)
+
+    status = router.route("app status spotify")
+    close = router.route("close app spotify")
+
+    assert isinstance(status, ToolResult) and status.success
+    assert isinstance(close, ConfirmationRequest)
+    assert controller.close_calls == []
+
+
+def test_recognized_invalid_close_app_never_falls_through_to_provider() -> None:
+    decision = make_router(FakeLauncher()).route_detailed("close app explorer")
+
+    assert decision.recognized
+    assert isinstance(decision.result, ToolResult) and not decision.result.success

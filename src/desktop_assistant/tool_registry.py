@@ -289,7 +289,7 @@ def default_tool_definitions(
     open_app: RegisteredTool,
     open_folder: RegisteredTool,
     open_website: RegisteredTool,
-    *filesystem_tools: RegisteredTool,
+    *additional_tools: RegisteredTool,
 ) -> tuple[ToolDefinition, ...]:
     definitions = [
         ToolDefinition(
@@ -323,11 +323,34 @@ def default_tool_definitions(
             lambda arguments: f"Open website: {arguments['url']}",
         ),
     ]
-    definitions.extend(_filesystem_definition(tool) for tool in filesystem_tools)
+    definitions.extend(_additional_tool_definition(tool) for tool in additional_tools)
     return tuple(definitions)
 
 
-def _filesystem_definition(tool: RegisteredTool) -> ToolDefinition:
+def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
+    app_name = string_argument("app_name", "Allowlisted application name.")
+    if tool.name == "app_status":
+        return ToolDefinition(
+            tool.name,
+            "Check whether one allowlisted Windows application is currently running.",
+            (app_name,),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Check application status: {arguments['app_name']}",
+        )
+    if tool.name == "close_app":
+        return ToolDefinition(
+            tool.name,
+            "Request a normal close for all open windows of one closable allowlisted application.",
+            (app_name,),
+            tool,
+            RiskLevel.SENSITIVE,
+            lambda arguments: f"Close all open windows of:\n{arguments['app_name']}",
+            (
+                "The application may contain unsaved work. It will receive a normal "
+                "close request and may ask you to save changes."
+            ),
+        )
     path = string_argument(
         "path",
         "Local filesystem path or known-folder path.",
@@ -392,4 +415,4 @@ def _filesystem_definition(tool: RegisteredTool) -> ToolDefinition:
                 f"Move:\n{arguments['source']}\n→\n{arguments['destination']}"
             ),
         )
-    raise ValueError(f"Unknown filesystem tool definition: {tool.name}")
+    raise ValueError(f"Unknown additional tool definition: {tool.name}")
