@@ -87,3 +87,81 @@ def test_stale_lock_recovery_when_no_server_running(qt_app: QApplication, tmp_pa
     assert coordinator.is_primary
     coordinator.shutdown()
 
+
+def test_listen_failure_fails_safely_and_releases_lock(
+    qt_app: QApplication,
+    monkeypatch,
+) -> None:
+    from desktop_assistant.gui.single_instance import SingleInstanceError
+    from PySide6.QtNetwork import QLocalServer
+
+    server_name = f"AiProject.tests.{uuid4().hex}"
+    coordinator = SingleInstanceCoordinator(server_name=server_name)
+
+    monkeypatch.setattr(coordinator._server, "listen", lambda _name: False)
+
+    with pytest.raises(SingleInstanceError):
+        coordinator.acquire()
+
+    assert not coordinator.is_primary
+    assert not coordinator._owns_server
+    # Lock was unlocked on listen failure, allowing another coordinator to attempt lock
+    replacement = SingleInstanceCoordinator(server_name=server_name)
+    assert replacement.acquire()
+    assert replacement.is_primary
+    replacement.shutdown()
+
+
+def test_exact_show_payload_protocol(qt_app: QApplication) -> None:
+    from PySide6.QtNetwork import QLocalSocket
+
+    server_name = f"AiProject.tests.{uuid4().hex}"
+    activations: list[str] = []
+    primary = SingleInstanceCoordinator(server_name=server_name)
+    primary.set_activation_callback(lambda: activations.append("activated"))
+    assert primary.acquire()
+
+    def send_raw(payload: bytes | None) -> None:
+        done = []
+
+        def _worker() -> None:
+            socket = QLocalSocket()
+            socket.connectToServer(server_name)
+            if socket.waitForConnected(500):
+                if payload is not None:
+                    socket.write(payload)
+                    socket.flush()
+                    socket.waitForBytesWritten(500)
+                if not socket.waitForDisconnected(500):
+                    socket.disconnectFromServer()
+                    socket.waitForDisconnected(500)
+            done.append(True)
+
+        t = Thread(target=_worker)
+        t.start()
+        _wait_until(qt_app, lambda: bool(done), timeout=1.0)
+        t.join(timeout=1.0)
+
+    # 1. Non-SHOW payload: HELLO
+    send_raw(b"HELLO\n")
+    _wait_until(qt_app, lambda: True, timeout=0.1)
+    assert activations == []
+
+    # 2. Empty payload
+    send_raw(None)
+    _wait_until(qt_app, lambda: True, timeout=0.1)
+    assert activations == []
+
+    # 3. Malformed binary payload
+    send_raw(b"\xff\xfe\x00\x01\x02")
+    _wait_until(qt_app, lambda: True, timeout=0.1)
+    assert activations == []
+
+    # 4. Exact SHOW payload
+    send_raw(b"SHOW\n")
+    _wait_until(qt_app, lambda: len(activations) == 1)
+    assert activations == ["activated"]
+
+    primary.shutdown()
+
+

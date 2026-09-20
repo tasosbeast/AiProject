@@ -18,7 +18,12 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_assistant.gui.widgets import CommandInput, ConversationView, MessageKind
-from desktop_assistant.gui.worker import AssistantWorker, BackgroundWorker
+from desktop_assistant.gui.worker import (
+    ActionWorker,
+    AssistantWorker,
+    BackgroundWorker,
+    NetworkWorker,
+)
 from desktop_assistant.models import AssistantResponse, AssistantResponseKind
 from desktop_assistant.voice.models import AudioRecording, SpeechAudio
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
@@ -91,7 +96,8 @@ class MainWindow(QMainWindow):
         self._speech_provider = speech_provider
         self._speech_player = speech_player
         self._voice_output_enabled = voice_output_enabled
-        self._active_worker: BackgroundWorker | None = None
+        self._active_worker: NetworkWorker | None = None
+        self._active_action_worker: ActionWorker | None = None
         self._active_recording: AudioRecording | None = None
         self._state = OperationState.READY
         self._current_request_is_voice = False
@@ -163,7 +169,7 @@ class MainWindow(QMainWindow):
     def prepare_for_quit(self) -> None:
         self._force_close = True
 
-    def perform_shutdown(self) -> None:
+    def perform_shutdown(self, action_timeout: float = 2.0) -> None:
         if self._shutdown_complete:
             return
         self._shutting_down = True
@@ -172,6 +178,9 @@ class MainWindow(QMainWindow):
         if self._active_worker is not None:
             self._active_worker.cancel()
             self._active_worker = None
+        if self._active_action_worker is not None:
+            self._active_action_worker.wait_completion(timeout=action_timeout)
+            self._active_action_worker = None
         self.send_button.setEnabled(False)
         self.command_input.setEnabled(False)
         self.mic_button.setEnabled(False)
@@ -370,6 +379,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _handle_result(self, result: object) -> None:
         self._active_worker = None
+        self._active_action_worker = None
         if self._shutting_down:
             return
         if not isinstance(result, AssistantResponse):
@@ -399,7 +409,7 @@ class MainWindow(QMainWindow):
             and self._speech_player is not None
         ):
             self._set_state(OperationState.SPEAKING)
-            worker = BackgroundWorker(lambda: self._speech_provider.synthesize(tool_result.message))
+            worker = NetworkWorker(lambda: self._speech_provider.synthesize(tool_result.message))
             worker.signals.succeeded.connect(self._handle_speech_audio)
             worker.signals.failed.connect(self._handle_speech_failure)
             self._active_worker = worker
@@ -418,10 +428,10 @@ class MainWindow(QMainWindow):
             return
         self._pending_confirmation_id = None
         self._set_state(OperationState.WORKING)
-        worker = BackgroundWorker(lambda: self._assistant.confirm(confirmation_id))
+        worker = ActionWorker(lambda: self._assistant.confirm(confirmation_id))
         worker.signals.succeeded.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_assistant_failure)
-        self._active_worker = worker
+        self._active_action_worker = worker
         self._thread_pool.start(worker)
 
     @Slot(str)
@@ -436,10 +446,10 @@ class MainWindow(QMainWindow):
         self._pending_confirmation_id = None
         self._current_request_is_voice = False
         self._set_state(OperationState.WORKING)
-        worker = BackgroundWorker(lambda: self._assistant.cancel(confirmation_id))
+        worker = ActionWorker(lambda: self._assistant.cancel(confirmation_id))
         worker.signals.succeeded.connect(self._handle_result)
         worker.signals.failed.connect(self._handle_assistant_failure)
-        self._active_worker = worker
+        self._active_action_worker = worker
         self._thread_pool.start(worker)
 
     @Slot()

@@ -263,3 +263,50 @@ def test_natural_close_app_calls_provider_once_across_confirmation() -> None:
     assert result.success
     assert provider.calls == ["Κλείσε το Notepad."]
     assert [app.display_name for app in controller.close_calls] == ["Notepad"]
+
+
+def test_cancelled_assistant_handle_prevents_safe_tool_execution() -> None:
+    from desktop_assistant.cancellation import CancellationToken
+
+    launcher = FakeLauncher()
+    provider = FakeProvider(IntentResult.tool_action("open_app", {"app_name": "Notepad"}))
+    assistant = make_assistant(launcher, provider)
+    token = CancellationToken()
+    token.cancel()
+
+    response = assistant.handle("Open notepad please", cancellation_token=token)
+
+    assert not response.success
+    assert response.confirmation is None
+    assert launcher.apps == []
+
+
+def test_cancelled_assistant_handle_prevents_sensitive_confirmation_creation(tmp_path: Path) -> None:
+    from desktop_assistant.cancellation import CancellationToken
+
+    target = tmp_path / "new_dir"
+    provider = FakeProvider(IntentResult.tool_action("create_folder", {"path": str(target)}))
+    assistant = make_assistant(FakeLauncher(), provider)
+    token = CancellationToken()
+    token.cancel()
+
+    response = assistant.handle("Create a folder here", cancellation_token=token)
+
+    assert not response.success
+    assert response.confirmation is None
+    assert not target.exists()
+    assert not assistant.has_pending_confirmation()
+
+
+def test_shutdown_assistant_handle_prevents_all_tool_execution(tmp_path: Path) -> None:
+    target = tmp_path / "new_dir"
+    provider = FakeProvider(IntentResult.tool_action("create_folder", {"path": str(target)}))
+    assistant = make_assistant(FakeLauncher(), provider)
+    assistant.shutdown()
+
+    response = assistant.handle("Create a folder here")
+
+    assert not response.success
+    assert response.confirmation is None
+    assert not target.exists()
+    assert not assistant.has_pending_confirmation()

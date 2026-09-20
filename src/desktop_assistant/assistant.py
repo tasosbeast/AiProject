@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from desktop_assistant.cancellation import CancellationToken
 from desktop_assistant.intent.models import IntentKind, IntentResult
 from desktop_assistant.intent.provider import IntentProvider, IntentProviderError
 from desktop_assistant.models import (
@@ -29,8 +30,17 @@ class Assistant:
         self._router = router
         self._tool_registry = tool_registry
         self._intent_provider = intent_provider
+        self._shutting_down = False
 
-    def handle(self, request: str) -> AssistantResponse:
+    def handle(
+        self,
+        request: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        if self._shutting_down or (cancellation_token is not None and cancellation_token.is_cancelled):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
         if self._tool_registry.has_pending_confirmation():
             return self._completed(
                 ToolResult(
@@ -42,6 +52,8 @@ class Assistant:
 
         deterministic = self._router.route_detailed(request)
         if deterministic.recognized:
+            if self._shutting_down or (cancellation_token is not None and cancellation_token.is_cancelled):
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
             return self._response(deterministic.result)
 
         if self._intent_provider is None:
@@ -59,6 +71,11 @@ class Assistant:
             return self._completed(
                 ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
             )
+
+        # Cancellation boundary: verify before executing any resolved tool action
+        if self._shutting_down or (cancellation_token is not None and cancellation_token.is_cancelled):
+            logger.info("Intent resolved after cancellation/shutdown; discarding tool execution")
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
 
         return self._response(self._resolve_intent(intent))
 
@@ -78,6 +95,7 @@ class Assistant:
     def shutdown(self) -> None:
         """Discard session-only authorization state during application shutdown."""
 
+        self._shutting_down = True
         self._tool_registry.discard_pending_confirmation()
 
     def _resolve_intent(self, intent: IntentResult) -> RegistryOutcome:

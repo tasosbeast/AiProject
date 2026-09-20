@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 INSTANCE_SERVER_NAME = "AiProject.AIAssistant.v1"
 
 
+class SingleInstanceError(RuntimeError):
+    """Raised when single-instance IPC coordination fails unrecoverably."""
+
+
 class SingleInstanceCoordinator(QObject):
     """Owns a local IPC endpoint used only to focus the primary GUI instance."""
 
@@ -48,19 +52,13 @@ class SingleInstanceCoordinator(QObject):
             logger.info("Existing assistant instance was asked to show")
             return False
 
-        # Recover only when the owner is demonstrably stale and no server answered.
+        # Recover only when the lock is demonstrably stale and no server answered.
         if self._lock.removeStaleLockFile() and self._lock.tryLock(0):
             logger.info("Recovered stale single-instance lock")
             return self._start_primary_server()
 
-        # Final fallback: remove stale socket if previous process crashed without clean unlock
-        QLocalServer.removeServer(self._server_name)
-        if self._lock.removeStaleLockFile() and self._lock.tryLock(0):
-            logger.info("Recovered stale single-instance lock after removing stale server")
-            return self._start_primary_server()
-
         logger.warning("Another instance owns the startup lock but did not answer")
-        return False
+        raise SingleInstanceError("Another instance owns the startup lock but did not answer.")
 
     def shutdown(self) -> None:
         if not self._owns_server:
@@ -78,9 +76,15 @@ class SingleInstanceCoordinator(QObject):
             logger.info("Single-instance endpoint started")
             return True
         self._lock.unlock()
-        logger.warning("Single-instance endpoint could not be established")
-        # Fail open so an IPC platform error does not make the application unusable.
-        return True
+        self._owns_server = False
+        logger.error(
+            "Single-instance endpoint could not be established on %s: %s",
+            self._server_name,
+            self._server.errorString(),
+        )
+        raise SingleInstanceError(
+            f"Single-instance endpoint could not be established: {self._server.errorString()}"
+        )
 
     def _notify_primary(self) -> bool:
         socket = QLocalSocket()
@@ -91,9 +95,10 @@ class SingleInstanceCoordinator(QObject):
         socket.write(b"SHOW\n")
         socket.flush()
         socket.waitForBytesWritten(self._connect_timeout_ms)
-        socket.disconnectFromServer()
         if not socket.waitForDisconnected(self._connect_timeout_ms):
-            socket.abort()
+            socket.disconnectFromServer()
+            if not socket.waitForDisconnected(self._connect_timeout_ms):
+                socket.abort()
         return True
 
     @Slot()
@@ -102,12 +107,19 @@ class SingleInstanceCoordinator(QObject):
             socket = self._server.nextPendingConnection()
             if socket is None:
                 continue
-            if socket.waitForReadyRead(self._connect_timeout_ms):
-                payload = bytes(socket.readAll()).strip()
-                if payload == b"SHOW" and self._activation_callback is not None:
+            payload = bytes(socket.readAll().data())
+            if not payload:
+                if socket.waitForReadyRead(self._connect_timeout_ms):
+                    payload = bytes(socket.readAll().data())
+                else:
+                    payload = bytes(socket.readAll().data())
+            payload = payload.strip()
+            if payload == b"SHOW":
+                if self._activation_callback is not None:
                     self._activation_callback()
-            elif self._activation_callback is not None:
-                self._activation_callback()
+            elif payload:
+                logger.warning("Ignored non-SHOW single-instance IPC payload: %r", payload)
+            else:
+                logger.warning("Ignored single-instance connection with no payload")
             socket.disconnectFromServer()
             socket.deleteLater()
-

@@ -425,3 +425,61 @@ def test_late_confirm_or_cancel_action_after_shutdown_is_ignored(
 
     assert assistant.calls == []
 
+
+def test_perform_shutdown_waits_for_active_action_worker(qt_app: QApplication) -> None:
+    import threading
+    import time
+    from desktop_assistant.gui.worker import ActionWorker
+
+    action_completed = []
+    action_started = threading.Event()
+
+    def slow_action() -> None:
+        action_started.set()
+        time.sleep(0.1)
+        action_completed.append(True)
+
+    assistant = FakeAssistant()
+    window = make_window(assistant)
+    worker = ActionWorker(slow_action)
+    window._active_action_worker = worker
+    window._thread_pool.start(worker)
+
+    assert action_started.wait(timeout=1.0)
+    window.perform_shutdown(action_timeout=1.0)
+
+    assert action_completed == [True]
+    assert window._active_action_worker is None
+
+
+def test_perform_shutdown_cancels_network_worker_without_waiting(qt_app: QApplication) -> None:
+    import threading
+    import time
+    from desktop_assistant.gui.worker import NetworkWorker
+
+    network_started = threading.Event()
+    unblock_network = threading.Event()
+    worker_finished = []
+
+    def blocking_network_call() -> None:
+        network_started.set()
+        unblock_network.wait(timeout=5.0)
+        worker_finished.append(True)
+
+    assistant = FakeAssistant()
+    window = make_window(assistant)
+    worker = NetworkWorker(blocking_network_call)
+    window._active_worker = worker
+    window._thread_pool.start(worker)
+
+    assert network_started.wait(timeout=1.0)
+    t0 = time.monotonic()
+    window.perform_shutdown()
+    duration = time.monotonic() - t0
+
+    # Shutdown returns promptly without waiting for the slow network call
+    assert duration < 0.5
+    assert worker.cancellation_token.is_cancelled
+    unblock_network.set()
+
+
