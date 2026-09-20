@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import desktop_assistant.intent.openai_provider as provider_module
 from desktop_assistant.intent.models import IntentKind
-from desktop_assistant.intent.openai_provider import OpenAIIntentProvider
+from desktop_assistant.intent.openai_provider import (
+    OpenAIIntentProvider,
+    build_plan_tool_schema,
+)
 from desktop_assistant.intent.provider import (
     IntentProviderUnavailableError,
     MalformedIntentResponseError,
@@ -35,11 +39,60 @@ def function_call(name: str, arguments: str) -> SimpleNamespace:
     return SimpleNamespace(type="function_call", name=name, arguments=arguments)
 
 
-def make_provider(client: FakeClient) -> OpenAIIntentProvider:
+TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": "open_app",
+        "description": "Open an application.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "app_name": {"type": "string", "description": "App name"}
+            },
+            "required": ["app_name"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "open_folder",
+        "description": "Open a folder.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Folder path"}
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "list_folder",
+        "description": "List folder contents.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Folder path"}
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+]
+
+
+def make_provider(
+    client: FakeClient,
+    tool_schemas: list[dict[str, Any]] | None = None,
+) -> OpenAIIntentProvider:
     return OpenAIIntentProvider(
         api_key="test-key",
         model="test-model",
-        tool_schemas=[],
+        tool_schemas=TEST_TOOL_SCHEMAS if tool_schemas is None else tool_schemas,
         client=client,
     )
 
@@ -52,10 +105,11 @@ def test_provider_uses_stateless_responses_api_with_single_call_settings() -> No
     assert result.kind is IntentKind.TOOL_ACTION
     assert result.action is not None
     assert result.action.tool_name == "open_app"
+    assert result.action.arguments == {"app_name": "Spotify"}
     request = client.responses.calls[0]
     assert request["model"] == "test-model"
     assert request["store"] is False
-    assert request["parallel_tool_calls"] is True
+    assert request["parallel_tool_calls"] is False
     assert request["tool_choice"] == "required"
 
 
@@ -86,76 +140,188 @@ def test_provider_maps_control_intents_to_application_models() -> None:
     assert unsupported.message == "I cannot do that."
 
 
-def test_two_and_three_tool_calls_yield_action_plan_in_order() -> None:
-    two_calls = SimpleNamespace(
+def test_propose_action_plan_with_two_actions_yields_action_plan() -> None:
+    two_actions = SimpleNamespace(
         output=[
-            function_call("open_app", '{"app_name":"Spotify"}'),
-            function_call("open_app", '{"app_name":"Chrome"}'),
+            function_call(
+                "propose_action_plan",
+                '{"actions":[{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"open_app","arguments":{"app_name":"Chrome"}}]}',
+            )
         ]
     )
-    result_two = make_provider(FakeClient(two_calls)).resolve("Open Spotify and Chrome")
-    assert result_two.kind is IntentKind.ACTION_PLAN
-    assert result_two.plan is not None
-    assert len(result_two.plan.actions) == 2
-    assert result_two.plan.actions[0].tool_name == "open_app"
-    assert result_two.plan.actions[0].arguments == {"app_name": "Spotify"}
-    assert result_two.plan.actions[1].tool_name == "open_app"
-    assert result_two.plan.actions[1].arguments == {"app_name": "Chrome"}
+    result = make_provider(FakeClient(two_actions)).resolve("Open Spotify and Chrome")
+    assert result.kind is IntentKind.ACTION_PLAN
+    assert result.plan is not None
+    assert len(result.plan.actions) == 2
+    assert result.plan.actions[0].tool_name == "open_app"
+    assert result.plan.actions[0].arguments == {"app_name": "Spotify"}
+    assert result.plan.actions[1].tool_name == "open_app"
+    assert result.plan.actions[1].arguments == {"app_name": "Chrome"}
 
-    three_calls = SimpleNamespace(
+
+def test_propose_action_plan_with_three_actions_preserves_order() -> None:
+    three_actions = SimpleNamespace(
         output=[
-            function_call("open_app", '{"app_name":"Chrome"}'),
-            function_call("open_folder", '{"path":"Downloads"}'),
-            function_call("list_folder", '{"path":"Downloads"}'),
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Chrome"}},'
+                '{"tool_name":"open_folder","arguments":{"path":"Downloads"}},'
+                '{"tool_name":"list_folder","arguments":{"path":"Downloads"}}'
+                ']}',
+            )
         ]
     )
-    result_three = make_provider(FakeClient(three_calls)).resolve(
+    result = make_provider(FakeClient(three_actions)).resolve(
         "Άνοιξε το Chrome, άνοιξε τα Downloads και δείξε μου τα αρχεία"
     )
-    assert result_three.kind is IntentKind.ACTION_PLAN
-    assert result_three.plan is not None
-    assert len(result_three.plan.actions) == 3
-    assert [a.tool_name for a in result_three.plan.actions] == [
+    assert result.kind is IntentKind.ACTION_PLAN
+    assert result.plan is not None
+    assert len(result.plan.actions) == 3
+    assert [a.tool_name for a in result.plan.actions] == [
         "open_app",
         "open_folder",
         "list_folder",
     ]
+    assert [dict(a.arguments) for a in result.plan.actions] == [
+        {"app_name": "Chrome"},
+        {"path": "Downloads"},
+        {"path": "Downloads"},
+    ]
 
 
-def test_more_than_three_tool_calls_are_unsupported() -> None:
-    four_calls = SimpleNamespace(
+@pytest.mark.parametrize(
+    "plan_payload",
+    (
+        '{"actions": "not-a-list"}',
+        '{"actions": [{"tool_name": "open_app"}, {"tool_name": "open_app"}]}',
+        '{"actions": [{"arguments": {}}, {"arguments": {}}]}',
+        '{"actions": [1, 2]}',
+        '{"actions": [{"tool_name": "open_app", "arguments": "not-a-dict"}, {"tool_name": "open_app", "arguments": {}}]}',
+        '{"actions": [{"tool_name": "", "arguments": {"app_name": "Chrome"}}, {"tool_name": "open_app", "arguments": {"app_name": "Chrome"}}]}',
+    ),
+)
+def test_malformed_plan_returns_no_partial_plan(plan_payload: str) -> None:
+    malformed = SimpleNamespace(
+        output=[function_call("propose_action_plan", plan_payload)]
+    )
+    with pytest.raises(MalformedIntentResponseError):
+        make_provider(FakeClient(malformed)).resolve("Malformed plan")
+
+
+def test_invalid_second_step_rejects_whole_plan() -> None:
+    invalid_second = SimpleNamespace(
         output=[
-            function_call("open_app", '{"app_name":"Chrome"}'),
-            function_call("open_app", '{"app_name":"Spotify"}'),
-            function_call("open_app", '{"app_name":"VS Code"}'),
-            function_call("open_app", '{"app_name":"Notepad"}'),
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"open_app","arguments":{"invalid_field":"Chrome"}}'
+                ']}',
+            )
         ]
     )
-    result = make_provider(FakeClient(four_calls)).resolve("Open four apps")
+    with pytest.raises(MalformedIntentResponseError):
+        make_provider(FakeClient(invalid_second)).resolve("Open Spotify and bad step")
+
+
+def test_more_than_three_plan_steps_are_unsupported() -> None:
+    four_actions = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Chrome"}},'
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"open_app","arguments":{"app_name":"VS Code"}},'
+                '{"tool_name":"open_app","arguments":{"app_name":"Notepad"}}'
+                ']}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(four_actions)).resolve("Open four apps")
     assert result.kind is IntentKind.UNSUPPORTED
     assert "at most 3 actions" in (result.message or "")
 
 
-def test_mixed_control_and_tool_calls_are_unsupported() -> None:
-    mixed = SimpleNamespace(
+def test_fewer_than_two_plan_steps_are_rejected() -> None:
+    one_action = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":[{"tool_name":"open_app","arguments":{"app_name":"Chrome"}}]}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(one_action)).resolve("Open one in plan")
+    assert result.kind is IntentKind.UNSUPPORTED
+    assert "between 2 and 3 actions" in (result.message or "")
+
+
+def test_unknown_tool_discriminator_rejected() -> None:
+    unknown_tool = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Chrome"}},'
+                '{"tool_name":"format_c_drive","arguments":{}}'
+                ']}',
+            )
+        ]
+    )
+    with pytest.raises(MalformedIntentResponseError):
+        make_provider(FakeClient(unknown_tool)).resolve("Open and format")
+
+
+def test_wrong_arguments_for_discriminator_rejected() -> None:
+    wrong_args = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"path":"Downloads"}},'
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}}'
+                ']}',
+            )
+        ]
+    )
+    with pytest.raises(MalformedIntentResponseError):
+        make_provider(FakeClient(wrong_args)).resolve("Open apps with wrong argument")
+
+
+def test_multiple_top_level_function_calls_executes_nothing() -> None:
+    multi_call = SimpleNamespace(
         output=[
             function_call("open_app", '{"app_name":"Chrome"}'),
-            function_call("respond_conversationally", '{"message":"hello"}'),
+            function_call("open_app", '{"app_name":"Spotify"}'),
         ]
     )
-    result = make_provider(FakeClient(mixed)).resolve("Mixed request")
+    result = make_provider(FakeClient(multi_call)).resolve("Open both")
     assert result.kind is IntentKind.UNSUPPORTED
+    assert result.action is None
+    assert result.plan is None
+    assert "Multiple independent function calls are not supported." in (result.message or "")
 
 
-def test_multiple_control_calls_are_unsupported() -> None:
-    multi_control = SimpleNamespace(
-        output=[
-            function_call("respond_conversationally", '{"message":"hello"}'),
-            function_call("respond_conversationally", '{"message":"world"}'),
-        ]
-    )
-    result = make_provider(FakeClient(multi_control)).resolve("Multi control")
-    assert result.kind is IntentKind.UNSUPPORTED
+def test_plan_tool_schema_structure() -> None:
+    schema = build_plan_tool_schema(TEST_TOOL_SCHEMAS)
+    assert schema["type"] == "function"
+    assert schema["name"] == "propose_action_plan"
+    assert schema["strict"] is True
+    parameters = schema["parameters"]
+    assert parameters["type"] == "object"
+    assert parameters["required"] == ["actions"]
+    assert parameters["additionalProperties"] is False
+    actions = parameters["properties"]["actions"]
+    assert actions["type"] == "array"
+    assert actions["minItems"] == 2
+    assert actions["maxItems"] == 3
+    variants = actions["items"]["anyOf"]
+    assert len(variants) == 3
+    tool_names = [v["properties"]["tool_name"]["enum"][0] for v in variants]
+    assert tool_names == ["open_app", "open_folder", "list_folder"]
 
 
 @pytest.mark.parametrize(
@@ -193,3 +359,4 @@ def test_sdk_failures_are_normalized(monkeypatch, exception_name: str) -> None:
 
     with pytest.raises(IntentProviderUnavailableError):
         provider.resolve("request")
+
