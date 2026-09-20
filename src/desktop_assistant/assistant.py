@@ -45,9 +45,30 @@ class Assistant:
         self._router = router
         self._tool_registry = tool_registry
         self._intent_provider = intent_provider
-        self._shutting_down = False
+        self._shutdown_event = threading.Event()
+        self._state_lock = threading.RLock()
         self._execution_lock = threading.Lock()
         self._pending_plan: _PendingPlan | None = None
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self._shutdown_event.is_set()
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._shutdown_event.is_set()
+
+    def _sync_pending_plan(self) -> None:
+        """Synchronize _pending_plan with authoritative tool registry confirmation state."""
+        with self._state_lock:
+            if self._pending_plan is not None:
+                if self._pending_plan.confirmation_id is not None:
+                    if not self._tool_registry.has_pending_confirmation(self._pending_plan.confirmation_id):
+                        logger.info(
+                            "Pending plan discarded because its confirmation expired or was removed",
+                            extra={"plan_id": self._pending_plan.plan_id},
+                        )
+                        self._pending_plan = None
 
     def handle(
         self,
@@ -58,6 +79,7 @@ class Assistant:
         if self._is_cancelled(cancellation_token):
             return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
 
+        self._sync_pending_plan()
         if self.has_pending_confirmation():
             return self._completed(
                 ToolResult(
@@ -106,9 +128,10 @@ class Assistant:
                 ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
             )
 
+        if self._is_cancelled(cancellation_token):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
         if intent.kind is IntentKind.CONVERSATION:
-            if self._is_cancelled(cancellation_token):
-                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
             return self._completed(ToolResult(True, intent.message or "How can I help?", RiskLevel.SAFE))
 
         if intent.kind is IntentKind.TOOL_ACTION:
@@ -131,15 +154,22 @@ class Assistant:
 
     def confirm(self, confirmation_id: str) -> AssistantResponse:
         """Approve the exact already-prepared action without re-routing it."""
+        if self._is_cancelled(None):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
         with self._execution_lock:
-            if self._shutting_down:
+            if self._is_cancelled(None):
                 return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
 
-            pending_plan = self._pending_plan
+            self._sync_pending_plan()
+            with self._state_lock:
+                pending_plan = self._pending_plan
+
             if pending_plan is not None and pending_plan.confirmation_id == confirmation_id:
                 res = self._tool_registry.confirm(confirmation_id)
                 if not res.success:
-                    self._pending_plan = None
+                    with self._state_lock:
+                        self._pending_plan = None
                     pending_plan.completed_results.append(res)
                     total_steps = len(pending_plan.actions)
                     step_num = pending_plan.current_step_index + 1
@@ -154,9 +184,11 @@ class Assistant:
                 pending_plan.completed_results.append(res)
                 total_steps = len(pending_plan.actions)
 
+                # Check for shutdown after sensitive action finishes before starting remaining safe steps
                 for step_idx in range(pending_plan.current_step_index + 1, total_steps):
-                    if self._shutting_down:
-                        self._pending_plan = None
+                    if self._is_cancelled(None):
+                        with self._state_lock:
+                            self._pending_plan = None
                         msg = (
                             f"Plan cancelled at step {step_idx + 1} of {total_steps}. "
                             f"{len(pending_plan.completed_results)} action(s) completed before cancellation."
@@ -168,13 +200,15 @@ class Assistant:
                     next_action = pending_plan.actions[step_idx]
                     step_outcome = self._tool_registry.dispatch_prepared(next_action)
                     if isinstance(step_outcome, ConfirmationRequest):
-                        self._pending_plan.current_step_index = step_idx
-                        self._pending_plan.confirmation_id = step_outcome.confirmation_id
+                        with self._state_lock:
+                            self._pending_plan.current_step_index = step_idx
+                            self._pending_plan.confirmation_id = step_outcome.confirmation_id
                         return AssistantResponse.confirmation_required(step_outcome)
 
                     if not step_outcome.success:
                         pending_plan.completed_results.append(step_outcome)
-                        self._pending_plan = None
+                        with self._state_lock:
+                            self._pending_plan = None
                         msg = (
                             f"Plan stopped at step {step_idx + 1} of {total_steps}: {step_outcome.message} "
                             f"Remaining steps were not run."
@@ -185,7 +219,8 @@ class Assistant:
 
                     pending_plan.completed_results.append(step_outcome)
 
-                self._pending_plan = None
+                with self._state_lock:
+                    self._pending_plan = None
                 msg = self._format_plan_summary(pending_plan.completed_results)
                 return self._completed(
                     ToolResult(True, msg, self._aggregate_risk(pending_plan.completed_results))
@@ -196,10 +231,14 @@ class Assistant:
     def cancel(self, confirmation_id: str) -> AssistantResponse:
         """Cancel and discard one pending action without invoking a provider."""
         with self._execution_lock:
-            pending_plan = self._pending_plan
+            self._sync_pending_plan()
+            with self._state_lock:
+                pending_plan = self._pending_plan
+
             if pending_plan is not None and pending_plan.confirmation_id == confirmation_id:
                 cancel_res = self._tool_registry.cancel(confirmation_id)
-                self._pending_plan = None
+                with self._state_lock:
+                    self._pending_plan = None
                 if not cancel_res.success:
                     return self._completed(cancel_res)
 
@@ -222,14 +261,16 @@ class Assistant:
             return self._completed(self._tool_registry.cancel(confirmation_id))
 
     def has_pending_confirmation(self) -> bool:
-        return self._pending_plan is not None or self._tool_registry.has_pending_confirmation()
+        self._sync_pending_plan()
+        with self._state_lock:
+            return self._pending_plan is not None or self._tool_registry.has_pending_confirmation()
 
     def shutdown(self) -> None:
-        """Discard session-only authorization state during application shutdown."""
-        with self._execution_lock:
-            self._shutting_down = True
+        """Signal shutdown immediately without blocking and discard session-only authorization state."""
+        self._shutdown_event.set()
+        with self._state_lock:
             self._pending_plan = None
-            self._tool_registry.discard_pending_confirmation()
+        self._tool_registry.discard_pending_confirmation()
 
     def _handle_action_plan(
         self,
@@ -237,6 +278,9 @@ class Assistant:
         *,
         cancellation_token: CancellationToken | None = None,
     ) -> AssistantResponse:
+        if self._is_cancelled(cancellation_token):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
         actions = plan.actions
         if not (2 <= len(actions) <= 3):
             return self._completed(
@@ -300,13 +344,14 @@ class Assistant:
                 outcome = self._tool_registry.dispatch_prepared(prepared, plan_context=context)
 
                 if isinstance(outcome, ConfirmationRequest):
-                    self._pending_plan = _PendingPlan(
-                        plan_id=uuid4().hex,
-                        actions=tuple(prepared_actions),
-                        completed_results=completed_results,
-                        current_step_index=i,
-                        confirmation_id=outcome.confirmation_id,
-                    )
+                    with self._state_lock:
+                        self._pending_plan = _PendingPlan(
+                            plan_id=uuid4().hex,
+                            actions=tuple(prepared_actions),
+                            completed_results=completed_results,
+                            current_step_index=i,
+                            confirmation_id=outcome.confirmation_id,
+                        )
                     return AssistantResponse.confirmation_required(outcome)
 
                 if not outcome.success:
@@ -341,7 +386,7 @@ class Assistant:
             return self._response(outcome)
 
     def _is_cancelled(self, token: CancellationToken | None) -> bool:
-        return self._shutting_down or (token is not None and token.is_cancelled)
+        return self._shutdown_event.is_set() or (token is not None and token.is_cancelled)
 
     @staticmethod
     def _format_plan_summary(results: list[ToolResult]) -> str:

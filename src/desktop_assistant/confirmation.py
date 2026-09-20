@@ -70,10 +70,17 @@ class ConfirmationManager:
         self._pending: _PendingConfirmation | None = None
         self._lock = RLock()
 
-    def has_pending(self) -> bool:
+    def is_active(self, confirmation_id: str | None = None) -> bool:
         with self._lock:
             self._expire_if_needed()
-            return self._pending is not None
+            if self._pending is None:
+                return False
+            if confirmation_id is not None and self._pending.confirmation_id != confirmation_id:
+                return False
+            return True
+
+    def has_pending(self) -> bool:
+        return self.is_active()
 
     def request(
         self,

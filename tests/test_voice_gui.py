@@ -532,3 +532,124 @@ def test_quit_during_tts_generation_ignores_late_speech_audio_and_failure(
     assert speech_player.played == []
     assert window.conversation.messages == original_messages
 
+
+def test_voice_multi_step_plan_executes_without_repeated_routing(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    class PlanAssistant:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def handle(self, request: str, cancellation_token: object = None) -> AssistantResponse:
+            self.calls.append(request)
+            return AssistantResponse.completed(
+                ToolResult(
+                    True,
+                    "Completed 2 actions:\n1. Opening Spotify.\n2. Opening Chrome.",
+                    RiskLevel.SAFE,
+                )
+            )
+
+        def confirm(self, confirmation_id: str) -> AssistantResponse:
+            raise AssertionError("No confirmation expected")
+
+        def cancel(self, confirmation_id: str) -> AssistantResponse:
+            raise AssertionError("No confirmation expected")
+
+        def shutdown(self) -> None:
+            pass
+
+    assistant = PlanAssistant()
+    recorder = FakeRecorder()
+    transcriber = FakeTranscriber("Άνοιξε το Spotify και το Chrome.")
+    window = make_window(assistant, recorder, transcriber)  # type: ignore[arg-type]
+
+    window.toggle_recording()
+    window.toggle_recording()
+    recorder.recording_ready.emit(make_recording(tmp_path / "voice.wav"))
+
+    wait_until(qt_app, lambda: window.operation_state is OperationState.READY)
+
+    # Exactly one handle call for the entire multi-step request
+    assert assistant.calls == ["Άνοιξε το Spotify και το Chrome."]
+    assert len(transcriber.calls) == 1
+    assert "Completed 2 actions:" in window.conversation.messages[-1].text
+
+
+def test_gui_quit_during_confirmed_plan_sensitive_action_allows_sensitive_and_stops_continuation(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    req = ConfirmationRequest(
+        "conf-12345",
+        "Close Spotify",
+        RiskLevel.SENSITIVE,
+        "Warning message",
+    )
+
+    class ConfirmingAssistant:
+        def __init__(self) -> None:
+            self.handle_calls: list[str] = []
+            self.confirm_entered = Event()
+            self.confirm_release = Event()
+            self.sensitive_completed = False
+            self.shutdown_called = False
+            self.continuation_stopped = False
+
+        def handle(self, request: str, cancellation_token: object = None) -> AssistantResponse:
+            self.handle_calls.append(request)
+            return AssistantResponse.confirmation_required(req)
+
+        def confirm(self, confirmation_id: str) -> AssistantResponse:
+            self.confirm_entered.set()
+            self.confirm_release.wait(timeout=3.0)
+            self.sensitive_completed = True
+            if self.shutdown_called:
+                self.continuation_stopped = True
+                return AssistantResponse.completed(
+                    ToolResult(
+                        False,
+                        "Execution cancelled at step 3 of 3. 2 action(s) completed before cancellation.",
+                        RiskLevel.SENSITIVE,
+                    )
+                )
+            return AssistantResponse.completed(
+                ToolResult(True, "All actions completed.", RiskLevel.SENSITIVE)
+            )
+
+        def cancel(self, confirmation_id: str) -> AssistantResponse:
+            raise AssertionError("Cancel not expected")
+
+        def shutdown(self) -> None:
+            self.shutdown_called = True
+
+    assistant = ConfirmingAssistant()
+    window = make_window(assistant, FakeRecorder(), FakeTranscriber())  # type: ignore[arg-type]
+
+    window.command_input.setPlainText("Close Spotify then open Chrome")
+    window.submit_command()
+
+    wait_until(qt_app, lambda: bool(window.conversation.confirmations))
+
+    # Click confirm
+    window.conversation.confirmations[-1].confirm_button.click()
+    assert assistant.confirm_entered.wait(timeout=2.0)
+
+    # Perform quit/shutdown while confirmed sensitive action is actively running
+    window.perform_shutdown()
+    assert assistant.shutdown_called is True
+
+    # Release sensitive action to finish
+    assistant.confirm_release.set()
+
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.005)
+
+    assert assistant.sensitive_completed is True
+    assert assistant.continuation_stopped is True
+    assert window.is_shutting_down
+
+

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Mapping
 
 
@@ -16,6 +17,11 @@ class IntentKind(str, Enum):
 class ToolAction:
     tool_name: str
     arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.arguments, Mapping):
+            raise TypeError("ToolAction arguments must be a Mapping.")
+        object.__setattr__(self, "arguments", MappingProxyType(dict(self.arguments)))
 
 
 @dataclass(frozen=True, slots=True)

@@ -174,6 +174,10 @@ class MainWindow(QMainWindow):
             return
         self._shutting_down = True
         self._shutdown_complete = True
+        try:
+            self._assistant.shutdown()
+        except Exception:
+            logger.exception("Assistant shutdown failed")
         self._thread_pool.clear()
         if self._active_worker is not None:
             self._active_worker.cancel()
@@ -196,10 +200,6 @@ class MainWindow(QMainWindow):
                 logger.exception("Speech playback could not be stopped during shutdown")
         self._cleanup_recording()
         self._pending_confirmation_id = None
-        try:
-            self._assistant.shutdown()
-        except Exception:
-            logger.exception("Pending confirmation could not be discarded during shutdown")
 
     def _build_ui(self) -> QWidget:
         root = QWidget()

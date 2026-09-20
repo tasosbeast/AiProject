@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from unittest.mock import MagicMock
 import pytest
 
@@ -9,6 +10,7 @@ from desktop_assistant.assistant import Assistant
 from desktop_assistant.cancellation import CancellationToken
 from desktop_assistant.cli import present_response
 from desktop_assistant.config import AppCatalog
+from desktop_assistant.confirmation import ConfirmationManager
 from desktop_assistant.filesystem import FilesystemPathValidator
 from desktop_assistant.filesystem_tools import (
     CreateFolderTool,
@@ -53,6 +55,7 @@ def make_test_assistant(
     process_controller: FakeProcessController | None = None,
     home: Path | None = None,
     extra_tools: tuple[ToolDefinition, ...] = (),
+    confirmation_manager: ConfirmationManager | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -75,6 +78,7 @@ def make_test_assistant(
     registry = ToolRegistry(
         tuple(tools),
         known_folders=KnownFolderResolver(home),
+        confirmation_manager=confirmation_manager,
     )
     return Assistant(CommandRouter(registry, catalog), registry, provider)
 
@@ -526,3 +530,444 @@ def test_cli_plan_confirmation_cancels() -> None:
     assert any('Plan cancelled at step 2 of 3.' in line for line in output)
     assert controller.close_calls == []
     assert [app.display_name for app in launcher.apps] == ['Spotify']
+
+
+class BlockingSensitiveTool:
+    name = "blocking_sensitive"
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.completed = False
+
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult:
+        return ToolPreparation(None, arguments)
+
+    def execute(self, prepared_value: object) -> ToolResult:
+        self.entered.set()
+        self.release.wait(timeout=3.0)
+        self.completed = True
+        return ToolResult(True, "Sensitive action completed.", RiskLevel.SENSITIVE)
+
+
+class BlockingSafeTool:
+    name = "blocking_safe"
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.completed = False
+
+    def prepare(self, arguments: ToolArguments) -> ToolPreparation | ToolResult:
+        return ToolPreparation(None, arguments)
+
+    def execute(self, prepared_value: object) -> ToolResult:
+        self.entered.set()
+        self.release.wait(timeout=3.0)
+        self.completed = True
+        return ToolResult(True, "Safe action completed.", RiskLevel.SAFE)
+
+
+class BlockingProvider:
+    def __init__(self, result: IntentResult) -> None:
+        self.result = result
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[str] = []
+
+    def resolve(self, request: str) -> IntentResult:
+        self.calls.append(request)
+        self.entered.set()
+        self.release.wait(timeout=3.0)
+        return self.result
+
+
+def test_plan_confirmation_expiry_clears_pending_plan_and_allows_new_requests() -> None:
+    now = [100.0]
+    manager = ConfirmationManager(lifetime_seconds=120, clock=lambda: now[0])
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+                ToolAction("open_app", {"app_name": "Chrome"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(
+        launcher, provider, process_controller=controller, confirmation_manager=manager
+    )
+
+    res = assistant.handle("Open Spotify, close Spotify, open Chrome")
+    assert res.kind is AssistantResponseKind.CONFIRMATION_REQUIRED
+    assert [app.display_name for app in launcher.apps] == ["Spotify"]
+    assert assistant.has_pending_confirmation()
+
+    # Advance clock past expiry
+    now[0] = 230.0
+
+    # Assistant.has_pending_confirmation() should be False and pending plan cleared
+    assert not assistant.has_pending_confirmation()
+
+    # Next request succeeds and is not blocked
+    provider.result = IntentResult.action_plan(
+        (
+            ToolAction("open_app", {"app_name": "Chrome"}),
+            ToolAction("open_app", {"app_name": "Chrome"}),
+        )
+    )
+    res2 = assistant.handle("Open Chrome and open Chrome")
+    assert res2.success
+
+
+def test_plan_confirm_after_expiry_rejects_and_runs_zero_actions() -> None:
+    now = [100.0]
+    manager = ConfirmationManager(lifetime_seconds=120, clock=lambda: now[0])
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+                ToolAction("open_app", {"app_name": "Chrome"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(
+        launcher, provider, process_controller=controller, confirmation_manager=manager
+    )
+
+    res = assistant.handle("Open Spotify, close Spotify, open Chrome")
+    req = res.confirmation
+    assert req is not None
+    assert [app.display_name for app in launcher.apps] == ["Spotify"]
+    assert controller.close_calls == []
+
+    # Advance clock past expiry
+    now[0] = 230.0
+
+    # Confirm attempt
+    confirm_res = assistant.confirm(req.confirmation_id)
+    assert not confirm_res.success
+    assert "expired" in confirm_res.result.message.casefold() or "no longer valid" in confirm_res.result.message.casefold()
+    assert controller.close_calls == []
+    assert [app.display_name for app in launcher.apps] == ["Spotify"]
+    assert not assistant.has_pending_confirmation()
+
+
+def test_plan_cancel_after_expiry_rejects_and_runs_zero_actions() -> None:
+    now = [100.0]
+    manager = ConfirmationManager(lifetime_seconds=120, clock=lambda: now[0])
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+                ToolAction("open_app", {"app_name": "Chrome"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(
+        launcher, provider, process_controller=controller, confirmation_manager=manager
+    )
+
+    res = assistant.handle("Open Spotify, close Spotify, open Chrome")
+    req = res.confirmation
+    assert req is not None
+
+    now[0] = 230.0
+
+    cancel_res = assistant.cancel(req.confirmation_id)
+    assert not cancel_res.success
+    assert "expired" in cancel_res.result.message.casefold() or "no longer valid" in cancel_res.result.message.casefold()
+    assert controller.close_calls == []
+    assert not assistant.has_pending_confirmation()
+
+
+def test_plan_expiry_after_safe_step_does_not_rollback_and_discards_remaining() -> None:
+    now = [100.0]
+    manager = ConfirmationManager(lifetime_seconds=120, clock=lambda: now[0])
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+                ToolAction("open_app", {"app_name": "Chrome"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(
+        launcher, provider, process_controller=controller, confirmation_manager=manager
+    )
+
+    assistant.handle("Open Spotify, close Spotify, open Chrome")
+    assert [app.display_name for app in launcher.apps] == ["Spotify"]
+
+    # Expiry occurs
+    now[0] = 300.0
+
+    # New request executes without touching or rolling back step 1
+    provider.result = IntentResult.action_plan(
+        (
+            ToolAction("open_app", {"app_name": "Notepad"}),
+            ToolAction("open_app", {"app_name": "Notepad"}),
+        )
+    )
+    res2 = assistant.handle("Open Notepad twice")
+    assert res2.success
+    # Completed safe action Spotify was not undone, sensitive close Spotify was never executed, step 3 Chrome was discarded
+    assert [app.display_name for app in launcher.apps] == ["Spotify", "Notepad", "Notepad"]
+    assert controller.close_calls == []
+
+
+def test_shutdown_during_active_confirmed_sensitive_step_allows_sensitive_but_prevents_safe_continuation() -> None:
+    launcher = FakeLauncher()
+    blocking_sensitive = BlockingSensitiveTool()
+    sensitive_def = ToolDefinition(
+        name="blocking_sensitive",
+        description="Blocks during execution.",
+        arguments=(string_argument("target", "Target."),),
+        implementation=blocking_sensitive,
+        risk_level=RiskLevel.SENSITIVE,
+        confirmation_summary=lambda _args: "Execute blocking sensitive action",
+        confirmation_warning="Sensitive action warning",
+    )
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("blocking_sensitive", {"target": "foo"}),
+                ToolAction("open_app", {"app_name": "Chrome"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider, extra_tools=(sensitive_def,))
+
+    res = assistant.handle("Open Spotify, block sensitive, open Chrome")
+    assert res.kind is AssistantResponseKind.CONFIRMATION_REQUIRED
+    req = res.confirmation
+    assert req is not None
+    assert [app.display_name for app in launcher.apps] == ["Spotify"]
+
+    confirm_result: list[AssistantResponse] = []
+    thread = threading.Thread(
+        target=lambda: confirm_result.append(assistant.confirm(req.confirmation_id)),
+        daemon=True,
+    )
+    thread.start()
+    assert blocking_sensitive.entered.wait(timeout=2.0)
+
+    # Shutdown called while sensitive action is actively executing
+    assistant.shutdown()
+    # Release the sensitive action to finish
+    blocking_sensitive.release.set()
+    thread.join(timeout=2.0)
+
+    assert len(confirm_result) == 1
+    # The active sensitive action completed cleanly!
+    assert blocking_sensitive.completed is True
+    # The subsequent safe action (Chrome) was NOT executed!
+    assert [app.display_name for app in launcher.apps] == ["Spotify"]
+    # Result indicates cancellation before step 3
+    assert not confirm_result[0].success
+    assert "step 3" in confirm_result[0].result.message
+
+
+def test_shutdown_during_provider_resolution_executes_zero_plan_steps() -> None:
+    launcher = FakeLauncher()
+    provider = BlockingProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("open_app", {"app_name": "Chrome"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider)  # type: ignore[arg-type]
+
+    thread_result: list[AssistantResponse] = []
+    thread = threading.Thread(
+        target=lambda: thread_result.append(assistant.handle("Open both")),
+        daemon=True,
+    )
+    thread.start()
+    assert provider.entered.wait(timeout=2.0)
+
+    assistant.shutdown()
+    provider.release.set()
+    thread.join(timeout=2.0)
+
+    assert len(thread_result) == 1
+    assert not thread_result[0].success
+    assert "shutting down" in thread_result[0].result.message.casefold() or "cancelled" in thread_result[0].result.message.casefold()
+    assert launcher.apps == []
+
+
+def test_shutdown_between_safe_plan_steps_stops_remaining() -> None:
+    launcher = FakeLauncher()
+    blocking_safe = BlockingSafeTool()
+    safe_def = ToolDefinition(
+        name="blocking_safe",
+        description="Blocks during execution.",
+        arguments=(string_argument("target", "Target."),),
+        implementation=blocking_safe,
+        risk_level=RiskLevel.SAFE,
+        confirmation_summary=lambda _args: "Execute blocking safe action",
+    )
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("blocking_safe", {"target": "bar"}),
+                ToolAction("open_app", {"app_name": "Spotify"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider, extra_tools=(safe_def,))
+
+    thread_result: list[AssistantResponse] = []
+    thread = threading.Thread(
+        target=lambda: thread_result.append(assistant.handle("Run safe then open")),
+        daemon=True,
+    )
+    thread.start()
+    assert blocking_safe.entered.wait(timeout=2.0)
+
+    assistant.shutdown()
+    blocking_safe.release.set()
+    thread.join(timeout=2.0)
+
+    assert len(thread_result) == 1
+    assert not thread_result[0].success
+    assert blocking_safe.completed is True
+    assert launcher.apps == []
+
+
+def test_shutdown_while_waiting_for_plan_confirmation_clears_pending_plan() -> None:
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider, process_controller=controller)
+
+    res = assistant.handle("Open Spotify and close Spotify")
+    assert res.kind is AssistantResponseKind.CONFIRMATION_REQUIRED
+    req = res.confirmation
+    assert req is not None
+    assert assistant.has_pending_confirmation()
+
+    assistant.shutdown()
+    assert not assistant.has_pending_confirmation()
+
+    confirm_res = assistant.confirm(req.confirmation_id)
+    assert not confirm_res.success
+    cancel_res = assistant.cancel(req.confirmation_id)
+    assert not cancel_res.success
+    assert controller.close_calls == []
+
+
+def test_tool_action_arguments_are_copy_owned_and_immutable() -> None:
+    from types import MappingProxyType
+
+    raw = {"app_name": "Spotify"}
+    action = ToolAction("open_app", raw)
+
+    assert isinstance(action.arguments, MappingProxyType)
+    assert action.arguments["app_name"] == "Spotify"
+
+    # Mutating raw dict does not affect action.arguments
+    raw["app_name"] = "Malicious"
+    assert action.arguments["app_name"] == "Spotify"
+
+    # Mutating action.arguments raises TypeError
+    with pytest.raises(TypeError):
+        action.arguments["app_name"] = "Other"  # type: ignore[index]
+
+
+def test_double_confirm_executes_sensitive_action_once() -> None:
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider, process_controller=controller)
+
+    res = assistant.handle("Open and close Spotify")
+    req = res.confirmation
+    assert req is not None
+
+    first = assistant.confirm(req.confirmation_id)
+    assert first.success
+    assert len(controller.close_calls) == 1
+
+    second = assistant.confirm(req.confirmation_id)
+    assert not second.success
+    assert len(controller.close_calls) == 1
+
+
+def test_cancel_then_confirm_executes_zero_sensitive_actions() -> None:
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider, process_controller=controller)
+
+    res = assistant.handle("Open and close Spotify")
+    req = res.confirmation
+    assert req is not None
+
+    cancel_res = assistant.cancel(req.confirmation_id)
+    assert cancel_res.success
+    assert len(controller.close_calls) == 0
+
+    confirm_res = assistant.confirm(req.confirmation_id)
+    assert not confirm_res.success
+    assert len(controller.close_calls) == 0
+
+
+def test_confirm_then_cancel_has_no_second_effect() -> None:
+    launcher = FakeLauncher()
+    controller = FakeProcessController({"Spotify"})
+    provider = FakeProvider(
+        IntentResult.action_plan(
+            (
+                ToolAction("open_app", {"app_name": "Spotify"}),
+                ToolAction("close_app", {"app_name": "Spotify"}),
+            )
+        )
+    )
+    assistant = make_test_assistant(launcher, provider, process_controller=controller)
+
+    res = assistant.handle("Open and close Spotify")
+    req = res.confirmation
+    assert req is not None
+
+    confirm_res = assistant.confirm(req.confirmation_id)
+    assert confirm_res.success
+
+    cancel_res = assistant.cancel(req.confirmation_id)
+    assert not cancel_res.success
+

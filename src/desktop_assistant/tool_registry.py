@@ -155,6 +155,11 @@ class ToolRegistry:
     ) -> RegistryOutcome:
         if not isinstance(prepared, PreparedAction) or prepared.registry_token is not self._registry_token:
             return self._rejected("The prepared action is invalid.")
+        definition = self._definitions.get(prepared.tool_name)
+        if definition is None or definition.risk_level is not prepared.risk_level:
+            return self._rejected("The prepared action is invalid.")
+        if not self._is_deeply_immutable(prepared.execution_value):
+            return self._rejected("The prepared action is invalid.")
         decision = self._safety_policy.evaluate(prepared.risk_level)
         if decision is AuthorizationDecision.ALLOW:
             return self._execute_prepared(prepared)
@@ -218,8 +223,12 @@ class ToolRegistry:
             return ToolResult(False, "The confirmed action returned an invalid result.", action.risk_level)
         return result
 
-    def has_pending_confirmation(self) -> bool:
-        return self._confirmations.has_pending()
+    def has_pending_confirmation(self, confirmation_id: str | None = None) -> bool:
+        return self._confirmations.is_active(confirmation_id)
+
+    def sync_confirmation(self, confirmation_id: str | None = None) -> bool:
+        """Query and expire any pending confirmation state. Return True if still active."""
+        return self._confirmations.is_active(confirmation_id)
 
     def discard_pending_confirmation(self) -> None:
         self._confirmations.discard()
