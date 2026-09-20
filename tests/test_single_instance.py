@@ -37,20 +37,25 @@ def test_second_instance_only_activates_primary(qt_app: QApplication) -> None:
     activations: list[str] = []
     primary = SingleInstanceCoordinator(server_name=server_name)
     primary.set_activation_callback(lambda: activations.append("show"))
-    secondary = SingleInstanceCoordinator(server_name=server_name)
 
     assert primary.acquire()
     assert primary.is_primary
+
     secondary_results: list[bool] = []
-    thread = Thread(target=lambda: secondary_results.append(secondary.acquire()))
+
+    def run_secondary() -> None:
+        secondary = SingleInstanceCoordinator(server_name=server_name)
+        acquired = secondary.acquire()
+        secondary_results.append(acquired)
+        secondary.shutdown()
+
+    thread = Thread(target=run_secondary)
     thread.start()
     _wait_until(qt_app, lambda: bool(secondary_results))
     thread.join(timeout=1)
     assert secondary_results == [False]
-    assert not secondary.is_primary
     _wait_until(qt_app, lambda: activations == ["show"])
 
-    secondary.shutdown()
     primary.shutdown()
 
 

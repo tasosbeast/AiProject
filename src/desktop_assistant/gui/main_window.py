@@ -169,6 +169,9 @@ class MainWindow(QMainWindow):
         self._shutting_down = True
         self._shutdown_complete = True
         self._thread_pool.clear()
+        if self._active_worker is not None:
+            self._active_worker.cancel()
+            self._active_worker = None
         self.send_button.setEnabled(False)
         self.command_input.setEnabled(False)
         self.mic_button.setEnabled(False)
@@ -183,7 +186,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 logger.exception("Speech playback could not be stopped during shutdown")
         self._cleanup_recording()
-        self._active_worker = None
         self._pending_confirmation_id = None
         try:
             self._assistant.shutdown()

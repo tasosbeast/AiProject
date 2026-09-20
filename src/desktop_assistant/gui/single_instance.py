@@ -53,6 +53,12 @@ class SingleInstanceCoordinator(QObject):
             logger.info("Recovered stale single-instance lock")
             return self._start_primary_server()
 
+        # Final fallback: remove stale socket if previous process crashed without clean unlock
+        QLocalServer.removeServer(self._server_name)
+        if self._lock.removeStaleLockFile() and self._lock.tryLock(0):
+            logger.info("Recovered stale single-instance lock after removing stale server")
+            return self._start_primary_server()
+
         logger.warning("Another instance owns the startup lock but did not answer")
         return False
 
@@ -82,7 +88,12 @@ class SingleInstanceCoordinator(QObject):
         if not socket.waitForConnected(self._connect_timeout_ms):
             socket.abort()
             return False
+        socket.write(b"SHOW\n")
+        socket.flush()
+        socket.waitForBytesWritten(self._connect_timeout_ms)
         socket.disconnectFromServer()
+        if not socket.waitForDisconnected(self._connect_timeout_ms):
+            socket.abort()
         return True
 
     @Slot()
@@ -91,7 +102,12 @@ class SingleInstanceCoordinator(QObject):
             socket = self._server.nextPendingConnection()
             if socket is None:
                 continue
+            if socket.waitForReadyRead(self._connect_timeout_ms):
+                payload = bytes(socket.readAll()).strip()
+                if payload == b"SHOW" and self._activation_callback is not None:
+                    self._activation_callback()
+            elif self._activation_callback is not None:
+                self._activation_callback()
             socket.disconnectFromServer()
             socket.deleteLater()
-            if self._activation_callback is not None:
-                self._activation_callback()
+

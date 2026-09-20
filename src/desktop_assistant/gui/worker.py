@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
@@ -20,16 +21,44 @@ class BackgroundWorker(QRunnable):
         super().__init__()
         self._operation = operation
         self.signals = WorkerSignals()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        try:
+            self.signals.succeeded.disconnect()
+        except RuntimeError:
+            pass
+        try:
+            self.signals.failed.disconnect()
+        except RuntimeError:
+            pass
 
     @Slot()
     def run(self) -> None:
+        if self._cancelled:
+            return
+        thread = threading.Thread(target=self._execute, daemon=True)
+        thread.start()
+
+    def _execute(self) -> None:
         try:
             result = self._operation()
         except Exception:
+            if self._cancelled:
+                return
             logger.exception("Unexpected error in a background operation")
-            self.signals.failed.emit()
+            try:
+                self.signals.failed.emit()
+            except RuntimeError:
+                pass
         else:
-            self.signals.succeeded.emit(result)
+            if self._cancelled:
+                return
+            try:
+                self.signals.succeeded.emit(result)
+            except RuntimeError:
+                pass
 
 
 class AssistantWorker(BackgroundWorker):
@@ -37,3 +66,4 @@ class AssistantWorker(BackgroundWorker):
 
     def __init__(self, handler: Callable[[str], object], command: str) -> None:
         super().__init__(lambda: handler(command))
+

@@ -352,6 +352,25 @@ def test_active_worker_completion_after_shutdown_cannot_mutate_ui(
     assert not window.command_input.isEnabled()
 
 
+def test_shutdown_during_long_running_worker_returns_immediately(
+    qt_app: QApplication,
+) -> None:
+    assistant = BlockingAssistant()
+    window = make_window(assistant)
+    window.command_input.setPlainText("slow command")
+    window.submit_command()
+    wait_until(qt_app, lambda: len(assistant.calls) == 1)
+
+    start_time = time.monotonic()
+    window.perform_shutdown()
+    elapsed = time.monotonic() - start_time
+
+    assert elapsed < 0.1
+    assert window.is_shutting_down
+    assistant.release.set()
+
+
+
 def test_shutdown_clears_queued_background_work(qt_app: QApplication) -> None:
     pool = FakeThreadPool()
     window = MainWindow(FakeAssistant(), pool)  # type: ignore[arg-type]
