@@ -23,6 +23,15 @@ from desktop_assistant.media_control import (
     WindowsMediaController,
 )
 from desktop_assistant.process_control import AppProcessController, WindowsAppProcessController
+from desktop_assistant.projects import (
+    OpenProjectTool,
+    ProjectCatalog,
+    ProjectTaskRunner,
+    RunProjectTaskTool,
+    SubprocessProjectTaskRunner,
+    VSCodeLauncher,
+    WindowsVSCodeLauncher,
+)
 from desktop_assistant.router import CommandRouter
 from desktop_assistant.system_status import (
     SystemStatusCollector,
@@ -51,6 +60,9 @@ def build_assistant(
     process_controller: AppProcessController | None = None,
     media_controller: MediaController | None = None,
     system_status_collector: SystemStatusCollector | None = None,
+    project_catalog: ProjectCatalog | None = None,
+    vscode_launcher: VSCodeLauncher | None = None,
+    task_runner: ProjectTaskRunner | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -60,6 +72,9 @@ def build_assistant(
     process_controller = process_controller or WindowsAppProcessController()
     media_controller = media_controller or WindowsMediaController()
     system_status_collector = system_status_collector or WindowsSystemStatusCollector()
+    project_catalog = project_catalog or ProjectCatalog()
+    vscode_launcher = vscode_launcher or WindowsVSCodeLauncher()
+    task_runner = task_runner or SubprocessProjectTaskRunner()
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -76,6 +91,8 @@ def build_assistant(
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
             SystemStatusTool(system_status_collector),
+            OpenProjectTool(project_catalog, vscode_launcher),
+            RunProjectTaskTool(project_catalog, task_runner),
         ),
         known_folders=known_folders,
     )

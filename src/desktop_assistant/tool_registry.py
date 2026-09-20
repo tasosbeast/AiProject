@@ -491,4 +491,40 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             RiskLevel.SAFE,
             lambda arguments: f"Check system status: {arguments['metric']}",
         )
+    if tool.name == "open_project":
+        return ToolDefinition(
+            tool.name,
+            "Open one trusted project in VS Code.",
+            (
+                string_argument(
+                    "project_name",
+                    "Name of the trusted project.",
+                    enum_values=getattr(tool, "allowed_projects", ("AiProject",)),
+                ),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Open project: {arguments['project_name']}",
+        )
+    if tool.name == "run_project_task":
+        return ToolDefinition(
+            tool.name,
+            "Run a predefined trusted task for a project.",
+            (
+                string_argument(
+                    "project_name",
+                    "Name of the trusted project.",
+                    enum_values=getattr(tool, "allowed_projects", ("AiProject",)),
+                ),
+                string_argument(
+                    "task",
+                    "Predefined task to run.",
+                    enum_values=getattr(tool, "allowed_tasks", ("tests",)),
+                ),
+            ),
+            tool,
+            RiskLevel.SENSITIVE,
+            tool.confirmation_summary if hasattr(tool, "confirmation_summary") else (lambda arguments: f"Run {arguments['task']} for {arguments['project_name']}"),
+            "This will execute the project test suite in a local subprocess.",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")

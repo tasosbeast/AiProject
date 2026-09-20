@@ -31,6 +31,7 @@ from desktop_assistant.filesystem_tools import (
     RenamePathTool,
 )
 from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
+from desktop_assistant.projects import OpenProjectTool, ProjectCatalog, RunProjectTaskTool
 from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
@@ -81,6 +82,16 @@ class NoopSystemStatusCollector:
         raise AssertionError("Live smoke test must NEVER execute system status")
 
 
+class NoopVSCodeLauncher:
+    def open_directory(self, path: object) -> None:
+        raise AssertionError("Live smoke test must NEVER execute open_directory")
+
+
+class NoopProjectTaskRunner:
+    def run_task(self, command: object, cwd: object, timeout_seconds: float = 180.0) -> object:
+        raise AssertionError("Live smoke test must NEVER execute run_task")
+
+
 def make_smoke_registry() -> ToolRegistry:
     from desktop_assistant.config import AppCatalog
 
@@ -90,6 +101,9 @@ def make_smoke_registry() -> ToolRegistry:
     validator = NoopValidator()
     media_controller = NoopMediaController()
     system_status_collector = NoopSystemStatusCollector()
+    project_catalog = ProjectCatalog()
+    vscode_launcher = NoopVSCodeLauncher()
+    task_runner = NoopProjectTaskRunner()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),  # type: ignore[arg-type]
@@ -105,6 +119,8 @@ def make_smoke_registry() -> ToolRegistry:
             VolumeControlTool(media_controller),  # type: ignore[arg-type]
             MediaControlTool(media_controller),  # type: ignore[arg-type]
             SystemStatusTool(system_status_collector),  # type: ignore[arg-type]
+            OpenProjectTool(project_catalog, vscode_launcher),  # type: ignore[arg-type]
+            RunProjectTaskTool(project_catalog, task_runner),  # type: ignore[arg-type]
         )
     )
 

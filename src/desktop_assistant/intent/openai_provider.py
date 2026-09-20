@@ -32,6 +32,8 @@ If the user requests exactly one supported computer action, call that individual
 For volume adjustments, use volume_control with action: volume_up, volume_down, or mute_toggle.
 For media playback controls, use media_control with action: play_pause, next_track, or previous_track.
 For system performance and hardware status, use system_status with metric: cpu, memory, battery, disk, or overview.
+For opening trusted projects in VS Code, use open_project with project_name: AiProject.
+For running predefined project tasks such as tests, use run_project_task with project_name: AiProject, task: tests.
 
 MULTI ACTION:
 If the user requests exactly 2 or 3 supported computer actions, you MUST call propose_action_plan exactly once and include EVERY requested action in exact requested order.
@@ -65,6 +67,27 @@ Action: propose_action_plan with 1. open_app Spotify, 2. media_control play_paus
 
 User: 'Πες μου CPU και RAM.'
 Action: propose_action_plan with 1. system_status metric: cpu, 2. system_status metric: memory
+
+User: 'Άνοιξε το AiProject στο VS Code και τρέξε τα tests.'
+Action: propose_action_plan with 1. open_project project_name: AiProject, 2. run_project_task project_name: AiProject, task: tests
+
+User: 'Open AiProject in VS Code and run tests.'
+Action: propose_action_plan with 1. open_project project_name: AiProject, 2. run_project_task project_name: AiProject, task: tests
+
+User: 'Anoikse to AiProject sto VS Code kai trekse ta tests.'
+Action: propose_action_plan with 1. open_project project_name: AiProject, 2. run_project_task project_name: AiProject, task: tests
+
+User: 'Άνοιξε το AiProject στο VS Code.'
+Action: open_project with project_name: AiProject
+
+User: 'Τρέξε τα tests του AiProject.'
+Action: run_project_task with project_name: AiProject, task: tests
+
+User: 'Open AiProject in VS Code.'
+Action: open_project with project_name: AiProject
+
+User: 'Run AiProject tests.'
+Action: run_project_task with project_name: AiProject, task: tests
 
 User: 'Άνοιξε το Chrome.'
 Action: open_app Chrome

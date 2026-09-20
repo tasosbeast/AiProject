@@ -93,6 +93,14 @@ class CommandRouter:
         r"^(?:system\s+status|system\s+overview|check\s+system|overview|system)$",
         re.IGNORECASE,
     )
+    _open_project = re.compile(
+        r"^(?:open\s+project\s+aiproject|open\s+aiproject)$",
+        re.IGNORECASE,
+    )
+    _run_tests = re.compile(
+        r"^(?:run\s+tests|run\s+aiproject\s+tests|test\s+aiproject)$",
+        re.IGNORECASE,
+    )
 
     def __init__(self, registry: ToolRegistry | None = None, catalog: AppCatalog | None = None) -> None:
         self._registry = registry
@@ -256,6 +264,18 @@ class CommandRouter:
                 action=DeterministicAction("system_status", {"metric": "overview"}),
             )
 
+        if self._open_project.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("open_project", {"project_name": "AiProject"}),
+            )
+
+        if self._run_tests.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("run_project_task", {"project_name": "AiProject", "task": "tests"}),
+            )
+
         return RouteDecision(
             recognized=False,
             fallback_result=ToolResult(
@@ -287,6 +307,8 @@ class CommandRouter:
             "  check app <Chrome|Spotify|VS Code|File Explorer|Notepad>\n"
             "  close app <Chrome|Spotify|VS Code|Notepad>\n"
             "  open website <http-or-https URL>\n"
+            "  open aiproject\n"
+            "  run tests\n"
             "  volume up | volume down | mute\n"
             "  play | pause | next track | previous track\n"
             "  cpu | memory | battery | disk | system status\n"

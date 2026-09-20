@@ -23,6 +23,8 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "volume_control",
         "media_control",
         "system_status",
+        "open_project",
+        "run_project_task",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
@@ -54,6 +56,31 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
             "type": "string",
             "description": "System metric to check.",
             "enum": ["cpu", "memory", "battery", "disk", "overview"],
+        },
+    }
+
+    open_proj = next(schema for schema in schemas if schema["name"] == "open_project")
+    assert open_proj["parameters"]["required"] == ["project_name"]
+    assert open_proj["parameters"]["properties"] == {
+        "project_name": {
+            "type": "string",
+            "description": "Name of the trusted project.",
+            "enum": ["AiProject"],
+        },
+    }
+
+    run_task = next(schema for schema in schemas if schema["name"] == "run_project_task")
+    assert run_task["parameters"]["required"] == ["project_name", "task"]
+    assert run_task["parameters"]["properties"] == {
+        "project_name": {
+            "type": "string",
+            "description": "Name of the trusted project.",
+            "enum": ["AiProject"],
+        },
+        "task": {
+            "type": "string",
+            "description": "Predefined task to run.",
+            "enum": ["tests"],
         },
     }
 
@@ -97,6 +124,13 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
         registry.execute("system_status", {"metric": "temperature"}),
         registry.execute("system_status", {"metric": 99}),
         registry.execute("system_status", {}),
+        registry.execute("open_project", {"project_name": "MaliciousProject"}),
+        registry.execute("open_project", {"project_name": 123}),
+        registry.execute("open_project", {}),
+        registry.execute("run_project_task", {"project_name": "AiProject", "task": "format"}),
+        registry.execute("run_project_task", {"project_name": "Other", "task": "tests"}),
+        registry.execute("run_project_task", {"project_name": "AiProject"}),
+        registry.execute("run_project_task", {}),
     )
 
     assert all(not result.success for result in results)

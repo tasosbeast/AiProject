@@ -19,12 +19,20 @@ from desktop_assistant.intent.models import IntentResult
 from desktop_assistant.intent.provider import IntentProviderUnavailableError
 from desktop_assistant.known_folders import KnownFolderResolver
 from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
+from desktop_assistant.projects import OpenProjectTool, ProjectCatalog, RunProjectTaskTool
 from desktop_assistant.router import CommandRouter
 from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
-from conftest import FakeLauncher, FakeMediaController, FakeProcessController, FakeSystemStatusCollector
+from conftest import (
+    FakeLauncher,
+    FakeMediaController,
+    FakeProcessController,
+    FakeProjectTaskRunner,
+    FakeSystemStatusCollector,
+    FakeVSCodeLauncher,
+)
 
 
 class FakeProvider:
@@ -50,12 +58,18 @@ def make_assistant(
     process_controller: FakeProcessController | None = None,
     media_controller: FakeMediaController | None = None,
     system_status_collector: FakeSystemStatusCollector | None = None,
+    project_catalog: ProjectCatalog | None = None,
+    vscode_launcher: FakeVSCodeLauncher | None = None,
+    task_runner: FakeProjectTaskRunner | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
     media_controller = media_controller or FakeMediaController()
     system_status_collector = system_status_collector or FakeSystemStatusCollector()
+    project_catalog = project_catalog or ProjectCatalog()
+    vscode_launcher = vscode_launcher or FakeVSCodeLauncher()
+    task_runner = task_runner or FakeProjectTaskRunner()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -71,6 +85,8 @@ def make_assistant(
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
             SystemStatusTool(system_status_collector),
+            OpenProjectTool(project_catalog, vscode_launcher),
+            RunProjectTaskTool(project_catalog, task_runner),
         ),
         known_folders=KnownFolderResolver(home),
     )

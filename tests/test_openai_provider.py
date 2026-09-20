@@ -136,6 +136,47 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "open_project",
+        "description": "Open one trusted project in VS Code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Name of the trusted project.",
+                    "enum": ["AiProject"],
+                }
+            },
+            "required": ["project_name"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "run_project_task",
+        "description": "Run a predefined trusted task for a project.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Name of the trusted project.",
+                    "enum": ["AiProject"],
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Predefined task to run.",
+                    "enum": ["tests"],
+                },
+            },
+            "required": ["project_name", "task"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -475,6 +516,48 @@ def test_provider_resolves_system_status() -> None:
     assert result.plan.actions[0].arguments == {"metric": "cpu"}
     assert result.plan.actions[1].tool_name == "system_status"
     assert result.plan.actions[1].arguments == {"metric": "memory"}
+
+
+def test_provider_resolves_project_actions_and_plan() -> None:
+    open_response = SimpleNamespace(
+        output=[function_call("open_project", '{"project_name":"AiProject"}')]
+    )
+    result = make_provider(FakeClient(open_response)).resolve("Open AiProject in VS Code")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "open_project"
+    assert result.action.arguments == {"project_name": "AiProject"}
+
+    task_response = SimpleNamespace(
+        output=[function_call("run_project_task", '{"project_name":"AiProject","task":"tests"}')]
+    )
+    result = make_provider(FakeClient(task_response)).resolve("Run tests for AiProject")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "run_project_task"
+    assert result.action.arguments == {"project_name": "AiProject", "task": "tests"}
+
+    plan_response = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_project","arguments":{"project_name":"AiProject"}},'
+                '{"tool_name":"run_project_task","arguments":{"project_name":"AiProject","task":"tests"}}'
+                ']}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(plan_response)).resolve(
+        "Άνοιξε το AiProject στο VS Code και τρέξε τα tests."
+    )
+    assert result.kind is IntentKind.ACTION_PLAN
+    assert result.plan is not None
+    assert len(result.plan.actions) == 2
+    assert result.plan.actions[0].tool_name == "open_project"
+    assert result.plan.actions[0].arguments == {"project_name": "AiProject"}
+    assert result.plan.actions[1].tool_name == "run_project_task"
+    assert result.plan.actions[1].arguments == {"project_name": "AiProject", "task": "tests"}
 
 
 

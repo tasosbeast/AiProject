@@ -121,6 +121,55 @@ class FakeSystemStatusCollector:
         return self.disk
 
 
+from desktop_assistant.projects import (
+    OpenProjectTool,
+    ProjectCatalog,
+    RunProjectTaskTool,
+    TaskExecutionResult,
+)
+
+
+class FakeVSCodeLauncher:
+    def __init__(self) -> None:
+        self.opened_directories: list[Path] = []
+
+    def open_directory(self, path: Path) -> None:
+        self.opened_directories.append(path)
+
+
+class FakeProjectTaskRunner:
+    def __init__(
+        self,
+        exit_code: int = 0,
+        stdout: str = "================== 325 passed, 2 skipped in 12.66s ==================",
+        stderr: str = "",
+        timed_out: bool = False,
+    ) -> None:
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+        self.calls: list[dict[str, object]] = []
+
+    def run_task(
+        self,
+        command: tuple[str, ...],
+        cwd: Path,
+        timeout_seconds: float = 180.0,
+    ) -> TaskExecutionResult:
+        self.calls.append({
+            "command": command,
+            "cwd": cwd,
+            "timeout_seconds": timeout_seconds,
+        })
+        return TaskExecutionResult(
+            exit_code=self.exit_code,
+            stdout=self.stdout,
+            stderr=self.stderr,
+            timed_out=self.timed_out,
+        )
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -129,12 +178,18 @@ def make_registry(
     process_controller: FakeProcessController | None = None,
     media_controller: FakeMediaController | None = None,
     system_status_collector: FakeSystemStatusCollector | None = None,
+    project_catalog: ProjectCatalog | None = None,
+    vscode_launcher: FakeVSCodeLauncher | None = None,
+    task_runner: FakeProjectTaskRunner | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
     media_controller = media_controller or FakeMediaController()
     system_status_collector = system_status_collector or FakeSystemStatusCollector()
+    project_catalog = project_catalog or ProjectCatalog()
+    vscode_launcher = vscode_launcher or FakeVSCodeLauncher()
+    task_runner = task_runner or FakeProjectTaskRunner()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -150,6 +205,8 @@ def make_registry(
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
             SystemStatusTool(system_status_collector),
+            OpenProjectTool(project_catalog, vscode_launcher),
+            RunProjectTaskTool(project_catalog, task_runner),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),
