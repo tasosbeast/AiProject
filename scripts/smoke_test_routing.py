@@ -31,6 +31,7 @@ from desktop_assistant.filesystem_tools import (
     RenamePathTool,
 )
 from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
+from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
 
@@ -66,6 +67,20 @@ class NoopMediaController:
         raise AssertionError("Live smoke test must NEVER execute media control")
 
 
+class NoopSystemStatusCollector:
+    def get_cpu_percent(self) -> float:
+        raise AssertionError("Live smoke test must NEVER execute system status")
+
+    def get_memory_info(self) -> object:
+        raise AssertionError("Live smoke test must NEVER execute system status")
+
+    def get_battery_info(self) -> object:
+        raise AssertionError("Live smoke test must NEVER execute system status")
+
+    def get_disk_info(self) -> object:
+        raise AssertionError("Live smoke test must NEVER execute system status")
+
+
 def make_smoke_registry() -> ToolRegistry:
     from desktop_assistant.config import AppCatalog
 
@@ -74,6 +89,7 @@ def make_smoke_registry() -> ToolRegistry:
     controller = NoopProcessController()
     validator = NoopValidator()
     media_controller = NoopMediaController()
+    system_status_collector = NoopSystemStatusCollector()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),  # type: ignore[arg-type]
@@ -88,6 +104,7 @@ def make_smoke_registry() -> ToolRegistry:
             MovePathTool(validator),  # type: ignore[arg-type]
             VolumeControlTool(media_controller),  # type: ignore[arg-type]
             MediaControlTool(media_controller),  # type: ignore[arg-type]
+            SystemStatusTool(system_status_collector),  # type: ignore[arg-type]
         )
     )
 

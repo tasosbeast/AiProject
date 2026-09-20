@@ -73,6 +73,26 @@ class CommandRouter:
         r"^(?:previous\s+track|previous\s+song|prev\s+track|prev\s+song)$",
         re.IGNORECASE,
     )
+    _cpu_status = re.compile(
+        r"^(?:cpu|check\s+cpu|cpu\s+usage)$",
+        re.IGNORECASE,
+    )
+    _memory_status = re.compile(
+        r"^(?:ram|memory|check\s+ram|check\s+memory|ram\s+usage|memory\s+usage)$",
+        re.IGNORECASE,
+    )
+    _battery_status = re.compile(
+        r"^(?:battery|check\s+battery|battery\s+status)$",
+        re.IGNORECASE,
+    )
+    _disk_status = re.compile(
+        r"^(?:disk|check\s+disk|disk\s+space|check\s+disk\s+space)$",
+        re.IGNORECASE,
+    )
+    _overview_status = re.compile(
+        r"^(?:system\s+status|system\s+overview|check\s+system|overview|system)$",
+        re.IGNORECASE,
+    )
 
     def __init__(self, registry: ToolRegistry | None = None, catalog: AppCatalog | None = None) -> None:
         self._registry = registry
@@ -206,6 +226,36 @@ class CommandRouter:
                 action=DeterministicAction("media_control", {"action": "previous_track"}),
             )
 
+        if self._cpu_status.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("system_status", {"metric": "cpu"}),
+            )
+
+        if self._memory_status.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("system_status", {"metric": "memory"}),
+            )
+
+        if self._battery_status.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("system_status", {"metric": "battery"}),
+            )
+
+        if self._disk_status.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("system_status", {"metric": "disk"}),
+            )
+
+        if self._overview_status.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("system_status", {"metric": "overview"}),
+            )
+
         return RouteDecision(
             recognized=False,
             fallback_result=ToolResult(
@@ -239,6 +289,7 @@ class CommandRouter:
             "  open website <http-or-https URL>\n"
             "  volume up | volume down | mute\n"
             "  play | pause | next track | previous track\n"
+            "  cpu | memory | battery | disk | system status\n"
             "  help\n"
             "  exit"
         )

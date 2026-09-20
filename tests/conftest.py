@@ -60,6 +60,14 @@ class FakeProcessController:
         )
 
 
+from desktop_assistant.system_status import (
+    BatteryInfo,
+    DiskInfo,
+    MemoryInfo,
+    SystemStatusTool,
+)
+
+
 class FakeMediaController:
     def __init__(self) -> None:
         self.volume_actions: list[VolumeAction] = []
@@ -72,6 +80,47 @@ class FakeMediaController:
         self.media_actions.append(action)
 
 
+class FakeSystemStatusCollector:
+    def __init__(
+        self,
+        cpu_percent: float = 15.0,
+        memory: MemoryInfo | None = None,
+        battery: BatteryInfo | None = None,
+        disk: DiskInfo | None = None,
+    ) -> None:
+        self.cpu_percent = cpu_percent
+        self.memory = memory or MemoryInfo(
+            used_bytes=8 * (1024 ** 3),
+            total_bytes=16 * (1024 ** 3),
+            percent=50.0,
+        )
+        self.battery = battery or BatteryInfo(
+            has_battery=True,
+            percent=80,
+            is_charging=True,
+            ac_connected=True,
+        )
+        self.disk = disk or DiskInfo(
+            drive="C:",
+            total_bytes=500 * (1024 ** 3),
+            used_bytes=250 * (1024 ** 3),
+            free_bytes=250 * (1024 ** 3),
+            percent=50.0,
+        )
+
+    def get_cpu_percent(self) -> float:
+        return self.cpu_percent
+
+    def get_memory_info(self) -> MemoryInfo:
+        return self.memory
+
+    def get_battery_info(self) -> BatteryInfo:
+        return self.battery
+
+    def get_disk_info(self) -> DiskInfo:
+        return self.disk
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -79,11 +128,13 @@ def make_registry(
     home: Path | None = None,
     process_controller: FakeProcessController | None = None,
     media_controller: FakeMediaController | None = None,
+    system_status_collector: FakeSystemStatusCollector | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
     media_controller = media_controller or FakeMediaController()
+    system_status_collector = system_status_collector or FakeSystemStatusCollector()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -98,6 +149,7 @@ def make_registry(
             MovePathTool(validator),
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
+            SystemStatusTool(system_status_collector),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

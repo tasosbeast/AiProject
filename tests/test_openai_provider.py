@@ -118,6 +118,24 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "system_status",
+        "description": "Check system performance metrics.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "description": "System metric",
+                    "enum": ["cpu", "memory", "battery", "disk", "overview"],
+                }
+            },
+            "required": ["metric"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -426,5 +444,37 @@ def test_provider_resolves_volume_and_media_controls() -> None:
     assert result.plan.actions[0].arguments == {"app_name": "Spotify"}
     assert result.plan.actions[1].tool_name == "media_control"
     assert result.plan.actions[1].arguments == {"action": "play_pause"}
+
+
+def test_provider_resolves_system_status() -> None:
+    status_response = SimpleNamespace(
+        output=[function_call("system_status", '{"metric":"memory"}')]
+    )
+    result = make_provider(FakeClient(status_response)).resolve("How much RAM am I using?")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "system_status"
+    assert result.action.arguments == {"metric": "memory"}
+
+    plan_response = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"system_status","arguments":{"metric":"cpu"}},'
+                '{"tool_name":"system_status","arguments":{"metric":"memory"}}'
+                ']}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(plan_response)).resolve("Πες μου CPU και RAM")
+    assert result.kind is IntentKind.ACTION_PLAN
+    assert result.plan is not None
+    assert len(result.plan.actions) == 2
+    assert result.plan.actions[0].tool_name == "system_status"
+    assert result.plan.actions[0].arguments == {"metric": "cpu"}
+    assert result.plan.actions[1].tool_name == "system_status"
+    assert result.plan.actions[1].arguments == {"metric": "memory"}
+
 
 

@@ -31,6 +31,7 @@ SINGLE ACTION:
 If the user requests exactly one supported computer action, call that individual tool.
 For volume adjustments, use volume_control with action: volume_up, volume_down, or mute_toggle.
 For media playback controls, use media_control with action: play_pause, next_track, or previous_track.
+For system performance and hardware status, use system_status with metric: cpu, memory, battery, disk, or overview.
 
 MULTI ACTION:
 If the user requests exactly 2 or 3 supported computer actions, you MUST call propose_action_plan exactly once and include EVERY requested action in exact requested order.
@@ -62,6 +63,9 @@ Action: propose_action_plan with 1. open_app Chrome, 2. open_app Spotify
 User: 'Άνοιξε το Spotify και βάλε μουσική.'
 Action: propose_action_plan with 1. open_app Spotify, 2. media_control play_pause
 
+User: 'Πες μου CPU και RAM.'
+Action: propose_action_plan with 1. system_status metric: cpu, 2. system_status metric: memory
+
 User: 'Άνοιξε το Chrome.'
 Action: open_app Chrome
 
@@ -82,6 +86,21 @@ Action: media_control with action: next_track
 
 User: 'Previous song.'
 Action: media_control with action: previous_track
+
+User: 'Πόση RAM χρησιμοποιώ;' or 'How much RAM am I using?'
+Action: system_status with metric: memory
+
+User: 'Πόσο CPU χρησιμοποιείται;'
+Action: system_status with metric: cpu
+
+User: 'Πόση μπαταρία έχω;' or 'Check my battery.'
+Action: system_status with metric: battery
+
+User: 'Πόσο χώρο έχω στον δίσκο;'
+Action: system_status with metric: disk
+
+User: 'Πώς πάει ο υπολογιστής μου;'
+Action: system_status with metric: overview
 
 Never claim an action succeeded; local validation, safety policy, and confirmation remain authoritative. Requests may be English, Greek, Greeklish, or mixed. For a bare domain, use https://. Known-folder path values may start with Home, Desktop, Documents, Downloads, Music, Pictures, or Videos. Preserve explicit source and destination paths."""
 

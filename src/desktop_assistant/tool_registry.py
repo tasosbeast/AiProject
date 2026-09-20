@@ -476,4 +476,19 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             RiskLevel.SAFE,
             lambda arguments: f"Media control: {arguments['action']}",
         )
+    if tool.name == "system_status":
+        return ToolDefinition(
+            tool.name,
+            "Check system performance metrics (cpu, memory, battery, disk, overview).",
+            (
+                string_argument(
+                    "metric",
+                    "System metric to check.",
+                    enum_values=("cpu", "memory", "battery", "disk", "overview"),
+                ),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Check system status: {arguments['metric']}",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")

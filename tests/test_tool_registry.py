@@ -22,6 +22,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "move_path",
         "volume_control",
         "media_control",
+        "system_status",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
@@ -43,6 +44,16 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
             "type": "string",
             "description": "Media action to perform.",
             "enum": ["play_pause", "next_track", "previous_track"],
+        },
+    }
+
+    status = next(schema for schema in schemas if schema["name"] == "system_status")
+    assert status["parameters"]["required"] == ["metric"]
+    assert status["parameters"]["properties"] == {
+        "metric": {
+            "type": "string",
+            "description": "System metric to check.",
+            "enum": ["cpu", "memory", "battery", "disk", "overview"],
         },
     }
 
@@ -83,6 +94,9 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
         registry.execute("volume_control", {"action": 123}),
         registry.execute("media_control", {"action": "fast_forward"}),
         registry.execute("media_control", {}),
+        registry.execute("system_status", {"metric": "temperature"}),
+        registry.execute("system_status", {"metric": 99}),
+        registry.execute("system_status", {}),
     )
 
     assert all(not result.success for result in results)

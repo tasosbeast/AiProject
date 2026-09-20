@@ -34,8 +34,9 @@ from desktop_assistant.models import (
 from desktop_assistant.router import CommandRouter
 from desktop_assistant.safety import SafetyPolicy
 from desktop_assistant.tool_registry import ToolDefinition, ToolRegistry, default_tool_definitions, string_argument
+from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
-from conftest import FakeLauncher, FakeMediaController, FakeProcessController
+from conftest import FakeLauncher, FakeMediaController, FakeProcessController, FakeSystemStatusCollector
 
 
 class FakeProvider:
@@ -58,11 +59,13 @@ def make_test_assistant(
     extra_tools: tuple[ToolDefinition, ...] = (),
     confirmation_manager: ConfirmationManager | None = None,
     media_controller: FakeMediaController | None = None,
+    system_status_collector: FakeSystemStatusCollector | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
     media_controller = media_controller or FakeMediaController()
+    system_status_collector = system_status_collector or FakeSystemStatusCollector()
     tools = list(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -77,6 +80,7 @@ def make_test_assistant(
             MovePathTool(validator),
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
+            SystemStatusTool(system_status_collector),
         )
     )
     tools.extend(extra_tools)

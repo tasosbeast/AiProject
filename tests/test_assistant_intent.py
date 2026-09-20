@@ -20,10 +20,11 @@ from desktop_assistant.intent.provider import IntentProviderUnavailableError
 from desktop_assistant.known_folders import KnownFolderResolver
 from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
 from desktop_assistant.router import CommandRouter
+from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
-from conftest import FakeLauncher, FakeMediaController, FakeProcessController
+from conftest import FakeLauncher, FakeMediaController, FakeProcessController, FakeSystemStatusCollector
 
 
 class FakeProvider:
@@ -48,11 +49,13 @@ def make_assistant(
     home: Path | None = None,
     process_controller: FakeProcessController | None = None,
     media_controller: FakeMediaController | None = None,
+    system_status_collector: FakeSystemStatusCollector | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
     media_controller = media_controller or FakeMediaController()
+    system_status_collector = system_status_collector or FakeSystemStatusCollector()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -67,6 +70,7 @@ def make_assistant(
             MovePathTool(validator),
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
+            SystemStatusTool(system_status_collector),
         ),
         known_folders=KnownFolderResolver(home),
     )

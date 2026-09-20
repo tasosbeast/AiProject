@@ -24,6 +24,11 @@ from desktop_assistant.media_control import (
 )
 from desktop_assistant.process_control import AppProcessController, WindowsAppProcessController
 from desktop_assistant.router import CommandRouter
+from desktop_assistant.system_status import (
+    SystemStatusCollector,
+    SystemStatusTool,
+    WindowsSystemStatusCollector,
+)
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
@@ -45,6 +50,7 @@ def build_assistant(
     known_folders: KnownFolderResolver | None = None,
     process_controller: AppProcessController | None = None,
     media_controller: MediaController | None = None,
+    system_status_collector: SystemStatusCollector | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -53,6 +59,7 @@ def build_assistant(
     catalog = AppCatalog()
     process_controller = process_controller or WindowsAppProcessController()
     media_controller = media_controller or WindowsMediaController()
+    system_status_collector = system_status_collector or WindowsSystemStatusCollector()
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -68,6 +75,7 @@ def build_assistant(
             MovePathTool(filesystem_validator),
             VolumeControlTool(media_controller),
             MediaControlTool(media_controller),
+            SystemStatusTool(system_status_collector),
         ),
         known_folders=known_folders,
     )
