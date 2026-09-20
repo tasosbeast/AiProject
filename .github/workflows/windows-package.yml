@@ -1,0 +1,33 @@
+name: Windows package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install development and packaging dependencies
+        run: python -m pip install -e ".[dev,gui,build]"
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest
+      - name: Compile Python sources
+        run: python -m compileall -q src tests
+      - name: Build Windows bundle
+        shell: pwsh
+        run: .\scripts\build_windows.ps1 -Clean
+      - name: Upload onedir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AiAssistant-windows
+          path: dist/AiAssistant
+          if-no-files-found: error

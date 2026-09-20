@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication, QLabel
 
-from desktop_assistant.gui.main_window import MainWindow
+from desktop_assistant.gui.main_window import MainWindow, OperationState
 from desktop_assistant.gui.widgets import MessageKind
 from desktop_assistant.models import (
     AssistantResponse,
@@ -81,6 +81,20 @@ class ConfirmingAssistant(FakeAssistant):
     def cancel(self, confirmation_id: str) -> AssistantResponse:
         self.cancel_calls.append(confirmation_id)
         return AssistantResponse.completed(ToolResult(True, "Action cancelled.", RiskLevel.SAFE))
+
+
+class FakeThreadPool:
+    def __init__(self) -> None:
+        self.clear_calls = 0
+
+    def setMaxThreadCount(self, _count: int) -> None:
+        pass
+
+    def start(self, _worker: object) -> None:
+        pass
+
+    def clear(self) -> None:
+        self.clear_calls += 1
 
 
 @pytest.fixture(scope="module")
@@ -294,3 +308,101 @@ def test_cli_does_not_import_voice_or_qt() -> None:
 
     assert "voice" not in cli_source
     assert "pyside6" not in cli_source
+
+
+def test_shutdown_rejects_new_work_and_ignores_late_result(qt_app: QApplication) -> None:
+    assistant = FakeAssistant()
+    window = make_window(assistant)
+    window.perform_shutdown()
+    original_messages = list(window.conversation.messages)
+
+    window.command_input.setPlainText("open spotify")
+    window.submit_command()
+    window._handle_result(
+        AssistantResponse.completed(ToolResult(True, "Late result.", RiskLevel.SAFE))
+    )
+
+    assert window.is_shutting_down
+    assert assistant.calls == []
+    assert window.conversation.messages == original_messages
+    assert not window.command_input.isEnabled()
+    assert not window.send_button.isEnabled()
+    assert not window.mic_button.isEnabled()
+
+
+def test_active_worker_completion_after_shutdown_cannot_mutate_ui(
+    qt_app: QApplication,
+) -> None:
+    assistant = BlockingAssistant()
+    window = make_window(assistant)
+    window.command_input.setPlainText("open notepad")
+    window.submit_command()
+    wait_until(qt_app, lambda: len(assistant.calls) == 1)
+    messages_before_shutdown = list(window.conversation.messages)
+
+    window.perform_shutdown()
+    assistant.release.set()
+    deadline = time.monotonic() + 0.2
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.005)
+
+    assert window.conversation.messages == messages_before_shutdown
+    assert window.is_shutting_down
+    assert not window.command_input.isEnabled()
+
+
+def test_shutdown_clears_queued_background_work(qt_app: QApplication) -> None:
+    pool = FakeThreadPool()
+    window = MainWindow(FakeAssistant(), pool)  # type: ignore[arg-type]
+
+    window.perform_shutdown()
+    window.perform_shutdown()
+
+    assert pool.clear_calls == 1
+
+
+def test_late_confirmation_after_shutdown_cannot_create_confirmation_card(
+    qt_app: QApplication,
+) -> None:
+    assistant = FakeAssistant()
+    window = make_window(assistant)
+    window.perform_shutdown()
+    original_messages = list(window.conversation.messages)
+
+    window._handle_result(
+        AssistantResponse.confirmation_required(
+            ConfirmationRequest("cid-1", "Delete world", RiskLevel.DESTRUCTIVE, "Be careful")
+        )
+    )
+
+    assert window.conversation.messages == original_messages
+    assert window._pending_confirmation_id is None
+    assert window.conversation.confirmations == []
+
+
+def test_late_assistant_failure_after_shutdown_is_ignored(qt_app: QApplication) -> None:
+    assistant = FakeAssistant()
+    window = make_window(assistant)
+    window.perform_shutdown()
+    original_messages = list(window.conversation.messages)
+
+    window._handle_assistant_failure()
+
+    assert window.conversation.messages == original_messages
+
+
+def test_late_confirm_or_cancel_action_after_shutdown_is_ignored(
+    qt_app: QApplication,
+) -> None:
+    assistant = FakeAssistant()
+    window = make_window(assistant)
+    window._pending_confirmation_id = "test-id"
+    window._set_state(OperationState.AWAITING_CONFIRMATION)
+    window.perform_shutdown()
+
+    window._confirm_action("test-id")
+    window._cancel_action("test-id")
+
+    assert assistant.calls == []
+

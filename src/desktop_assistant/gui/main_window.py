@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self._pending_confirmation_id: str | None = None
         self._hide_on_close = False
         self._force_close = False
+        self._shutting_down = False
         self._shutdown_complete = False
 
         self.setWindowTitle("AI Assistant")
@@ -125,11 +126,17 @@ class MainWindow(QMainWindow):
     def operation_state(self) -> OperationState:
         return self._state
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return self._shutting_down
+
     def set_hide_on_close(self, enabled: bool) -> None:
         self._hide_on_close = enabled
 
     @Slot()
     def show_and_focus(self) -> None:
+        if self._shutting_down:
+            return
         if self.isMinimized():
             self.showNormal()
         elif not self.isVisible():
@@ -140,6 +147,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def hide_to_tray(self) -> None:
+        if self._shutting_down:
+            return
         if self._state is OperationState.LISTENING:
             try:
                 if self._recorder is not None:
@@ -157,7 +166,12 @@ class MainWindow(QMainWindow):
     def perform_shutdown(self) -> None:
         if self._shutdown_complete:
             return
+        self._shutting_down = True
         self._shutdown_complete = True
+        self._thread_pool.clear()
+        self.send_button.setEnabled(False)
+        self.command_input.setEnabled(False)
+        self.mic_button.setEnabled(False)
         if self._recorder is not None:
             try:
                 self._recorder.cancel()
@@ -169,6 +183,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 logger.exception("Speech playback could not be stopped during shutdown")
         self._cleanup_recording()
+        self._active_worker = None
         self._pending_confirmation_id = None
         try:
             self._assistant.shutdown()
@@ -250,7 +265,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def submit_command(self) -> None:
-        if self._state is not OperationState.READY:
+        if self._shutting_down or self._state is not OperationState.READY:
             return
         command = self.command_input.toPlainText().strip()
         if not command:
@@ -261,6 +276,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def toggle_recording(self) -> None:
+        if self._shutting_down:
+            return
         if self._state is OperationState.LISTENING:
             self._set_state(OperationState.TRANSCRIBING)
             try:
@@ -284,6 +301,10 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _handle_recording_ready(self, value: object) -> None:
+        if self._shutting_down:
+            if isinstance(value, AudioRecording):
+                value.cleanup()
+            return
         if not isinstance(value, AudioRecording):
             self._voice_error("The recording could not be processed.")
             return
@@ -307,12 +328,17 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _handle_recording_failure(self, _message: str = "") -> None:
+        if self._shutting_down:
+            self._cleanup_recording()
+            return
         self._cleanup_recording()
         self._voice_error("The microphone is unavailable or recording failed.")
 
     @Slot(object)
     def _handle_transcript(self, value: object) -> None:
         self._cleanup_recording()
+        if self._shutting_down:
+            return
         if self._state is not OperationState.TRANSCRIBING:
             return
         if not isinstance(value, str) or not value.strip():
@@ -323,9 +349,13 @@ class MainWindow(QMainWindow):
     @Slot()
     def _handle_transcription_failure(self) -> None:
         self._cleanup_recording()
+        if self._shutting_down:
+            return
         self._voice_error("Voice transcription is temporarily unavailable.")
 
     def _start_assistant(self, command: str, *, is_voice: bool) -> None:
+        if self._shutting_down:
+            return
         self.conversation.add_message(MessageKind.USER, command)
         self._current_request_is_voice = is_voice
         self._set_state(OperationState.WORKING)
@@ -338,6 +368,8 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _handle_result(self, result: object) -> None:
         self._active_worker = None
+        if self._shutting_down:
+            return
         if not isinstance(result, AssistantResponse):
             logger.error("Assistant returned an unexpected result type: %s", type(result).__name__)
             self._handle_assistant_failure()
@@ -376,6 +408,8 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _confirm_action(self, confirmation_id: str) -> None:
         if (
+            self._shutting_down
+            or
             self._state is not OperationState.AWAITING_CONFIRMATION
             or confirmation_id != self._pending_confirmation_id
         ):
@@ -391,6 +425,8 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _cancel_action(self, confirmation_id: str) -> None:
         if (
+            self._shutting_down
+            or
             self._state is not OperationState.AWAITING_CONFIRMATION
             or confirmation_id != self._pending_confirmation_id
         ):
@@ -406,6 +442,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_assistant_failure(self) -> None:
+        if self._shutting_down:
+            return
         self.conversation.add_message(
             MessageKind.ERROR,
             "Something went wrong while processing that command. Please try again.",
@@ -415,6 +453,8 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _handle_speech_audio(self, value: object) -> None:
         self._active_worker = None
+        if self._shutting_down:
+            return
         if not isinstance(value, SpeechAudio):
             self._handle_speech_failure()
             return
@@ -426,18 +466,26 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_speech_failure(self) -> None:
+        if self._shutting_down:
+            return
         self.conversation.add_message(MessageKind.ERROR, "Voice output is temporarily unavailable.")
         self._finish_processing()
 
     @Slot()
     def _handle_playback_finished(self) -> None:
+        if self._shutting_down:
+            return
         self._finish_processing()
 
     @Slot(str)
     def _handle_playback_failure(self, _message: str = "") -> None:
+        if self._shutting_down:
+            return
         self._handle_speech_failure()
 
     def _voice_error(self, message: str) -> None:
+        if self._shutting_down:
+            return
         self.conversation.add_message(MessageKind.ERROR, message)
         self._finish_processing()
 
@@ -448,6 +496,8 @@ class MainWindow(QMainWindow):
 
     def _finish_processing(self) -> None:
         self._active_worker = None
+        if self._shutting_down:
+            return
         self._pending_confirmation_id = None
         self._current_request_is_voice = False
         self._set_state(OperationState.READY)

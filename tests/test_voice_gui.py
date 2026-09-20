@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from threading import Event
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -98,6 +99,20 @@ class FakeTranscriber:
         self.calls.append(value)
         if self.error is not None:
             raise self.error
+        return self.transcript
+
+
+class BlockingTranscriber:
+    def __init__(self, transcript: str = "Άνοιξε το Spotify.") -> None:
+        self.transcript = transcript
+        self.started = Event()
+        self.release = Event()
+        self.calls: list[AudioRecording] = []
+
+    def transcribe(self, value: AudioRecording) -> str:
+        self.calls.append(value)
+        self.started.set()
+        self.release.wait(timeout=2.0)
         return self.transcript
 
 
@@ -417,3 +432,103 @@ def test_voice_provider_modules_cannot_execute_tools() -> None:
     for source_path in root.glob("*.py"):
         source = source_path.read_text(encoding="utf-8").casefold()
         assert all(term not in source for term in forbidden)
+
+
+def test_late_recording_callback_after_shutdown_only_cleans_audio(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    recorder = FakeRecorder()
+    transcriber = FakeTranscriber()
+    assistant = FakeAssistant()
+    window = make_window(assistant, recorder, transcriber)
+    recording = make_recording(tmp_path / "late.wav")
+    window.perform_shutdown()
+
+    recorder.recording_ready.emit(recording)
+    qt_app.processEvents()
+
+    assert not recording.path.exists()
+    assert transcriber.calls == []
+    assert assistant.calls == []
+    assert window.is_shutting_down
+
+
+def test_quit_during_transcription_ignores_late_transcript(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    recorder = FakeRecorder()
+    transcriber = BlockingTranscriber()
+    assistant = FakeAssistant()
+    window = make_window(assistant, recorder, transcriber)  # type: ignore[arg-type]
+    recording = make_recording(tmp_path / "voice.wav")
+    window.toggle_recording()
+    recorder.recording_ready.emit(recording)
+    wait_until(qt_app, lambda: len(transcriber.calls) == 1)
+
+    assert window.operation_state is OperationState.TRANSCRIBING
+
+    window.perform_shutdown()
+    transcriber.release.set()
+    deadline = time.monotonic() + 0.2
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.005)
+
+    assert assistant.calls == []
+    assert window.is_shutting_down
+
+
+def test_quit_during_transcription_ignores_late_failure(
+    qt_app: QApplication,
+    tmp_path: Path,
+) -> None:
+    recorder = FakeRecorder()
+    transcriber = BlockingTranscriber()
+    assistant = FakeAssistant()
+    window = make_window(assistant, recorder, transcriber)  # type: ignore[arg-type]
+    recording = make_recording(tmp_path / "voice.wav")
+    window.toggle_recording()
+    recorder.recording_ready.emit(recording)
+    wait_until(qt_app, lambda: len(transcriber.calls) == 1)
+
+    assert window.operation_state is OperationState.TRANSCRIBING
+    original_messages = list(window.conversation.messages)
+
+    window.perform_shutdown()
+    window._handle_transcription_failure()
+    transcriber.release.set()
+    deadline = time.monotonic() + 0.2
+    while time.monotonic() < deadline:
+        qt_app.processEvents()
+        time.sleep(0.005)
+
+    assert window.conversation.messages == original_messages
+
+
+def test_quit_during_tts_generation_ignores_late_speech_audio_and_failure(
+    qt_app: QApplication,
+) -> None:
+    speech_provider = FakeSpeechProvider()
+    speech_player = FakeSpeechPlayer()
+    assistant = FakeAssistant()
+    window = make_window(
+        assistant,
+        FakeRecorder(),
+        FakeTranscriber(),
+        speech=speech_provider,
+        player=speech_player,
+        voice_output_enabled=True,
+    )
+    window.perform_shutdown()
+    original_messages = list(window.conversation.messages)
+
+    window._handle_speech_audio(SpeechAudio(b"RIFF" + b"late" * 20))
+    window._handle_speech_failure()
+    window._handle_playback_finished()
+    window._handle_playback_failure("error")
+
+    assert speech_player.played == []
+    assert window.conversation.messages == original_messages
+

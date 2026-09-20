@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.pytest-tmp/
 .coverage
 htmlcov/
 .venv/
@@ -12,4 +13,3 @@ venv/
 .vscode/
 build/
 dist/
-

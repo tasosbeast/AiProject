@@ -4,7 +4,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
+
+from desktop_assistant.runtime_paths import RuntimePaths
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,17 +116,16 @@ class Settings:
         )
 
 
-def load_settings(env_file: str | Path | None = None) -> Settings:
+def load_settings(
+    env_file: str | Path | None = None,
+    *,
+    runtime_paths: RuntimePaths | None = None,
+) -> Settings:
     """Load local values without replacing explicit process environment values."""
 
-    if env_file is None:
-        discovered = find_dotenv(".env.local", usecwd=True)
-        if discovered:
-            load_dotenv(discovered, override=False)
-    else:
-        path = Path(env_file)
-        if path.is_file():
-            load_dotenv(path, override=False)
+    path = Path(env_file) if env_file is not None else (runtime_paths or RuntimePaths.detect()).env_file
+    if path.is_file():
+        load_dotenv(path, override=False)
     return Settings.from_environment()
 
 

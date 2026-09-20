@@ -71,6 +71,12 @@ py -3.11 -m venv .venv
 python -m pip install -e ".[dev,gui]"
 ```
 
+For packaging development, install the build extra as well:
+
+```powershell
+python -m pip install -e ".[dev,gui,build]"
+```
+
 ## Optional OpenAI configuration
 
 Copy `.env.example` to `.env.local` and add your project API key:
@@ -88,8 +94,11 @@ ASSISTANT_LOG_LEVEL=INFO
 ```
 
 Never commit `.env.local`; it is ignored by Git. Existing operating-system or
-process environment variables take precedence over `.env.local`. The default
-model is `gpt-5.6-luna`, and it can be replaced through `OPENAI_MODEL`.
+process environment variables take precedence over `.env.local`. In source
+development, the application resolves this file from the repository root based
+on the installed module location, not the shell's current working directory.
+The default model is `gpt-5.6-luna`, and it can be replaced through
+`OPENAI_MODEL`.
 
 The app does not contact OpenAI during startup. Without a key, exact deterministic
 commands continue to work offline; natural-language fallback remains unavailable.
@@ -125,6 +134,58 @@ The GUI uses a background Qt worker for command processing, so the window stays
 responsive while the shared assistant core runs. Conversation history exists
 only for the current session.
 
+## Packaged Windows application
+
+The supported packaged distribution is a PyInstaller 6.x **onedir** bundle.
+It is intentionally not a one-file executable: Qt Multimedia, Windows audio
+backends, OpenAI provider modules, and their runtime libraries remain in a
+predictable folder beside a small windowed launcher. The packaged application
+opens without a console window.
+
+Build from any PowerShell working directory:
+
+```powershell
+& "C:\path\to\AiProject\scripts\build_windows.ps1" -Clean
+```
+
+The output is:
+
+```text
+dist\AiAssistant\AiAssistant.exe
+```
+
+Distribute or relocate the complete `dist\AiAssistant` directory, not only the
+`.exe`. The build script verifies that the executable exists and fails if the
+bundle contains `.env.local` or an obvious OpenAI API-key-shaped value. Neither
+`build/` nor `dist/` is tracked by Git. The build is reproducible from the
+checked-in `packaging\AiAssistant.spec`; it contains no developer-machine
+absolute paths. PyInstaller `6.22.x` is the tested packaging line.
+
+### Packaged configuration and logs
+
+The packaged executable never loads `.env.local` from its current working
+directory, its installation folder, or parent directories. It uses this
+per-user writable location instead:
+
+```text
+%LOCALAPPDATA%\AiProject\AI Assistant\.env.local
+%LOCALAPPDATA%\AiProject\AI Assistant\logs\assistant.log
+```
+
+Copy `.env.example` to that `.env.local` path and add the API key only on the
+local machine. Operating-system/process environment variables still take
+precedence, followed by this file, then application defaults. This makes the
+configuration stable when the complete onedir bundle is moved and keeps secrets
+and logs out of the installed files. Packaged logs rotate at about 1.5 MB with
+three backups; they contain operational categories and failures but must not
+contain API keys, authorization headers, audio, or file contents.
+
+Without a key, the packaged GUI, deterministic commands, filesystem tools,
+tray, hotkey, and local confirmations continue to work. OpenAI intent routing,
+transcription, and TTS remain unavailable until configured. A startup failure is
+logged where possible and shown as a concise Windows dialog rather than being
+lost because the app has no console.
+
 ### System tray and global shortcut
 
 When `SYSTEM_TRAY_ENABLED=true` and Windows reports that a system tray is
@@ -146,6 +207,21 @@ transcription, assistant work, and TTS may finish normally.
 
 If the system tray is unavailable or disabled, the normal window close exits
 cleanly. Startup-with-Windows is intentionally not implemented.
+
+Only one GUI instance is intended to run per Windows user session. A second
+launch sends a narrow local IPC activation signal to the existing instance and
+then exits before constructing the assistant or OpenAI/audio providers. The
+first instance shows/restores the window and focuses the command input; it does
+not execute a command or activate the microphone. Stale local-instance state is
+recovered when its former owner is no longer running.
+
+During explicit Quit, the window enters a shutdown state before cleanup. It
+rejects new commands and microphone starts, clears queued background work,
+cancels recording, stops playback, removes known temporary audio, discards the
+pending confirmation, and unregisters the hotkey. Results that finish late are
+ignored, so they cannot mutate the closed UI, start TTS, or create a new
+confirmation. In-flight network calls are bounded by their existing provider
+timeouts rather than being forcefully terminated.
 
 ### Push-to-talk workflow
 
@@ -288,6 +364,11 @@ The test suite uses fake assistants and a fake system launcher. It does not
 actually open programs, folders, or browser windows. GUI tests run using Qt's
 offscreen platform and avoid pixel-perfect assertions.
 
+The Windows GitHub Actions workflow runs the full tests, Python compilation,
+the checked-in PyInstaller build, the post-build secret scan, and uploads the
+onedir artifact. It supplies no real API key and performs no microphone, tray,
+or physical hotkey acceptance tests; those remain local Windows checks.
+
 ## Architecture
 
 ```text
@@ -304,10 +385,12 @@ src/desktop_assistant/
   tools.py        Explicit open-app, open-folder, and open-website tools
   launcher.py     Windows-only operating-system boundary
   config.py       Central application allowlist and environment settings
+  runtime_paths.py Source/frozen configuration and writable-data locations
+  logging_setup.py Console-safe source logs and rotating packaged file logs
   models.py       Risk levels, interaction responses, and structured tool results
   safety.py       ALLOW / REQUIRE_CONFIRMATION / DENY policy decisions
   cli.py          Interactive command-line loop
-  gui/            Native Qt window, lifecycle/tray, hotkey, workers, audio, and stylesheet
+  gui/            Native Qt window, lifecycle/tray, hotkey, single-instance IPC, workers, audio, and stylesheet
   intent/         Provider-neutral intent models and isolated OpenAI adapter
   voice/          Audio models, provider contracts, and isolated OpenAI audio adapter
 ```
@@ -358,10 +441,16 @@ but omit action arguments and secrets.
 
 ## Roadmap
 
-1. Stabilize tray and global-hotkey behavior across packaged Windows builds.
-2. Add explicit, opt-in startup-with-Windows during the packaging milestone.
+1. Validate and sign a release build, then design a proper Windows installer.
+2. Add explicit, opt-in startup-with-Windows only after installer behavior is stable.
 3. Design deletion separately with recycle-bin semantics and stronger destructive confirmation.
 4. Improve full-application localization while keeping transcripts faithful.
+
+Current packaging limitations are deliberate: there is no installer, code
+signing, auto-update, startup registration, microphone permission onboarding,
+or one-file build. Antivirus reputation can vary for unsigned PyInstaller
+executables. Windows tray/hotkey/microphone behavior must be smoke-tested on the
+target machine because headless CI cannot reproduce a user's desktop session.
 
 Confirmation reduces authorization ambiguity but cannot eliminate every external
 time-of-check/time-of-use change. Future filesystem mutation tools must repeat
