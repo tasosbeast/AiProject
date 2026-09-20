@@ -20,9 +20,31 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "create_folder",
         "rename_path",
         "move_path",
+        "volume_control",
+        "media_control",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
+
+    volume = next(schema for schema in schemas if schema["name"] == "volume_control")
+    assert volume["parameters"]["required"] == ["action"]
+    assert volume["parameters"]["properties"] == {
+        "action": {
+            "type": "string",
+            "description": "Volume action to perform.",
+            "enum": ["volume_up", "volume_down", "mute_toggle"],
+        },
+    }
+
+    media = next(schema for schema in schemas if schema["name"] == "media_control")
+    assert media["parameters"]["required"] == ["action"]
+    assert media["parameters"]["properties"] == {
+        "action": {
+            "type": "string",
+            "description": "Media action to perform.",
+            "enum": ["play_pause", "next_track", "previous_track"],
+        },
+    }
 
     rename = next(schema for schema in schemas if schema["name"] == "rename_path")
     assert rename["parameters"]["required"] == ["source", "destination"]
@@ -57,6 +79,10 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
             "rename_path",
             {"source": "a", "destination": "b", "confirmation_summary": "Allow"},
         ),
+        registry.execute("volume_control", {"action": "explode"}),
+        registry.execute("volume_control", {"action": 123}),
+        registry.execute("media_control", {"action": "fast_forward"}),
+        registry.execute("media_control", {}),
     )
 
     assert all(not result.success for result in results)

@@ -16,6 +16,12 @@ from desktop_assistant.filesystem_tools import (
 from desktop_assistant.intent.provider import IntentProvider
 from desktop_assistant.known_folders import KnownFolderResolver
 from desktop_assistant.launcher import SystemLauncher, WindowsSystemLauncher
+from desktop_assistant.media_control import (
+    MediaControlTool,
+    MediaController,
+    VolumeControlTool,
+    WindowsMediaController,
+)
 from desktop_assistant.process_control import AppProcessController, WindowsAppProcessController
 from desktop_assistant.router import CommandRouter
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
@@ -38,6 +44,7 @@ def build_assistant(
     intent_provider: IntentProvider | None | object = _AUTO_PROVIDER,
     known_folders: KnownFolderResolver | None = None,
     process_controller: AppProcessController | None = None,
+    media_controller: MediaController | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -45,6 +52,7 @@ def build_assistant(
     launcher = launcher or WindowsSystemLauncher()
     catalog = AppCatalog()
     process_controller = process_controller or WindowsAppProcessController()
+    media_controller = media_controller or WindowsMediaController()
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -58,6 +66,8 @@ def build_assistant(
             CreateFolderTool(filesystem_validator),
             RenamePathTool(filesystem_validator),
             MovePathTool(filesystem_validator),
+            VolumeControlTool(media_controller),
+            MediaControlTool(media_controller),
         ),
         known_folders=known_folders,
     )

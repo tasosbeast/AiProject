@@ -13,6 +13,12 @@ from desktop_assistant.filesystem_tools import (
     RenamePathTool,
 )
 from desktop_assistant.known_folders import KnownFolderResolver
+from desktop_assistant.media_control import (
+    MediaAction,
+    MediaControlTool,
+    VolumeAction,
+    VolumeControlTool,
+)
 from desktop_assistant.process_control import CloseRequestResult
 from desktop_assistant.safety import SafetyPolicy
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
@@ -54,16 +60,30 @@ class FakeProcessController:
         )
 
 
+class FakeMediaController:
+    def __init__(self) -> None:
+        self.volume_actions: list[VolumeAction] = []
+        self.media_actions: list[MediaAction] = []
+
+    def send_volume(self, action: VolumeAction) -> None:
+        self.volume_actions.append(action)
+
+    def send_media(self, action: MediaAction) -> None:
+        self.media_actions.append(action)
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
     safety_policy: SafetyPolicy | None = None,
     home: Path | None = None,
     process_controller: FakeProcessController | None = None,
+    media_controller: FakeMediaController | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
+    media_controller = media_controller or FakeMediaController()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -76,6 +96,8 @@ def make_registry(
             CreateFolderTool(validator),
             RenamePathTool(validator),
             MovePathTool(validator),
+            VolumeControlTool(media_controller),
+            MediaControlTool(media_controller),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

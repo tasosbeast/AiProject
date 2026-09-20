@@ -30,6 +30,7 @@ from desktop_assistant.filesystem_tools import (
     PathExistsTool,
     RenamePathTool,
 )
+from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
 
@@ -57,6 +58,14 @@ class NoopValidator:
         raise AssertionError("Live smoke test must NEVER execute filesystem operations")
 
 
+class NoopMediaController:
+    def send_volume(self, action: object) -> None:
+        raise AssertionError("Live smoke test must NEVER execute volume control")
+
+    def send_media(self, action: object) -> None:
+        raise AssertionError("Live smoke test must NEVER execute media control")
+
+
 def make_smoke_registry() -> ToolRegistry:
     from desktop_assistant.config import AppCatalog
 
@@ -64,6 +73,7 @@ def make_smoke_registry() -> ToolRegistry:
     catalog = AppCatalog()
     controller = NoopProcessController()
     validator = NoopValidator()
+    media_controller = NoopMediaController()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),  # type: ignore[arg-type]
@@ -76,6 +86,8 @@ def make_smoke_registry() -> ToolRegistry:
             CreateFolderTool(validator),  # type: ignore[arg-type]
             RenamePathTool(validator),  # type: ignore[arg-type]
             MovePathTool(validator),  # type: ignore[arg-type]
+            VolumeControlTool(media_controller),  # type: ignore[arg-type]
+            MediaControlTool(media_controller),  # type: ignore[arg-type]
         )
     )
 

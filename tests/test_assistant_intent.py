@@ -18,11 +18,12 @@ from desktop_assistant.filesystem_tools import (
 from desktop_assistant.intent.models import IntentResult
 from desktop_assistant.intent.provider import IntentProviderUnavailableError
 from desktop_assistant.known_folders import KnownFolderResolver
+from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
 from desktop_assistant.router import CommandRouter
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 
-from conftest import FakeLauncher, FakeProcessController
+from conftest import FakeLauncher, FakeMediaController, FakeProcessController
 
 
 class FakeProvider:
@@ -35,7 +36,8 @@ class FakeProvider:
         self.calls.append(request)
         if self.error is not None:
             raise self.error
-        assert self.result is not None
+        if self.result is None:
+            raise AssertionError("FakeProvider had no result configured.")
         return self.result
 
 
@@ -45,10 +47,12 @@ def make_assistant(
     *,
     home: Path | None = None,
     process_controller: FakeProcessController | None = None,
+    media_controller: FakeMediaController | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
+    media_controller = media_controller or FakeMediaController()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -61,6 +65,8 @@ def make_assistant(
             CreateFolderTool(validator),
             RenamePathTool(validator),
             MovePathTool(validator),
+            VolumeControlTool(media_controller),
+            MediaControlTool(media_controller),
         ),
         known_folders=KnownFolderResolver(home),
     )

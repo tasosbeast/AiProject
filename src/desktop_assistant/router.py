@@ -49,6 +49,30 @@ class CommandRouter:
     _close_app = re.compile(r"^close\s+app\s+(.+?)\s*$", re.IGNORECASE)
     _explicit_app = re.compile(r"^open\s+app\s+(.+?)\s*$", re.IGNORECASE)
     _simple_app = re.compile(r"^open\s+(.+?)\s*$", re.IGNORECASE)
+    _volume_up = re.compile(
+        r"^(?:volume\s+up|increase\s+volume|turn\s+up(?:\s+the)?\s+volume)$",
+        re.IGNORECASE,
+    )
+    _volume_down = re.compile(
+        r"^(?:volume\s+down|decrease\s+volume|turn\s+down(?:\s+the)?\s+volume)$",
+        re.IGNORECASE,
+    )
+    _mute = re.compile(
+        r"^(?:mute|unmute|toggle\s+mute|mute\s+volume)$",
+        re.IGNORECASE,
+    )
+    _play_pause = re.compile(
+        r"^(?:play|pause|play\s*/\s*pause|play\s+pause|resume|toggle\s+playback)$",
+        re.IGNORECASE,
+    )
+    _next_track = re.compile(
+        r"^(?:next\s+track|next\s+song|skip\s+track|skip\s+song)$",
+        re.IGNORECASE,
+    )
+    _prev_track = re.compile(
+        r"^(?:previous\s+track|previous\s+song|prev\s+track|prev\s+song)$",
+        re.IGNORECASE,
+    )
 
     def __init__(self, registry: ToolRegistry | None = None, catalog: AppCatalog | None = None) -> None:
         self._registry = registry
@@ -146,6 +170,42 @@ class CommandRouter:
                     action=DeterministicAction("open_app", {"app_name": candidate}),
                 )
 
+        if self._volume_up.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("volume_control", {"action": "volume_up"}),
+            )
+
+        if self._volume_down.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("volume_control", {"action": "volume_down"}),
+            )
+
+        if self._mute.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("volume_control", {"action": "mute_toggle"}),
+            )
+
+        if self._play_pause.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("media_control", {"action": "play_pause"}),
+            )
+
+        if self._next_track.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("media_control", {"action": "next_track"}),
+            )
+
+        if self._prev_track.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("media_control", {"action": "previous_track"}),
+            )
+
         return RouteDecision(
             recognized=False,
             fallback_result=ToolResult(
@@ -177,6 +237,8 @@ class CommandRouter:
             "  check app <Chrome|Spotify|VS Code|File Explorer|Notepad>\n"
             "  close app <Chrome|Spotify|VS Code|Notepad>\n"
             "  open website <http-or-https URL>\n"
+            "  volume up | volume down | mute\n"
+            "  play | pause | next track | previous track\n"
             "  help\n"
             "  exit"
         )

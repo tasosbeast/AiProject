@@ -82,6 +82,42 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "volume_control",
+        "description": "Control system volume.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Volume action",
+                    "enum": ["volume_up", "volume_down", "mute_toggle"],
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "media_control",
+        "description": "Control media playback.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Media action",
+                    "enum": ["play_pause", "next_track", "previous_track"],
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -319,9 +355,9 @@ def test_plan_tool_schema_structure() -> None:
     assert actions["minItems"] == 2
     assert actions["maxItems"] == 3
     variants = actions["items"]["anyOf"]
-    assert len(variants) == 3
+    assert len(variants) == len(TEST_TOOL_SCHEMAS)
     tool_names = [v["properties"]["tool_name"]["enum"][0] for v in variants]
-    assert tool_names == ["open_app", "open_folder", "list_folder"]
+    assert tool_names == [tool["name"] for tool in TEST_TOOL_SCHEMAS]
 
 
 @pytest.mark.parametrize(
@@ -359,4 +395,36 @@ def test_sdk_failures_are_normalized(monkeypatch, exception_name: str) -> None:
 
     with pytest.raises(IntentProviderUnavailableError):
         provider.resolve("request")
+
+
+def test_provider_resolves_volume_and_media_controls() -> None:
+    volume_response = SimpleNamespace(
+        output=[function_call("volume_control", '{"action":"volume_up"}')]
+    )
+    result = make_provider(FakeClient(volume_response)).resolve("Turn up volume")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "volume_control"
+    assert result.action.arguments == {"action": "volume_up"}
+
+    plan_response = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"media_control","arguments":{"action":"play_pause"}}'
+                ']}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(plan_response)).resolve("Open Spotify and play music")
+    assert result.kind is IntentKind.ACTION_PLAN
+    assert result.plan is not None
+    assert len(result.plan.actions) == 2
+    assert result.plan.actions[0].tool_name == "open_app"
+    assert result.plan.actions[0].arguments == {"app_name": "Spotify"}
+    assert result.plan.actions[1].tool_name == "media_control"
+    assert result.plan.actions[1].arguments == {"action": "play_pause"}
+
 

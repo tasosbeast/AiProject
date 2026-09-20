@@ -47,9 +47,13 @@ class ToolArgumentDefinition:
     argument_type: ToolArgumentType = ToolArgumentType.STRING
     required: bool = True
     resolve_known_folder: bool = False
+    enum_values: tuple[str, ...] | None = None
 
     def schema(self) -> dict[str, Any]:
-        return {"type": self.argument_type.value, "description": self.description}
+        result: dict[str, Any] = {"type": self.argument_type.value, "description": self.description}
+        if self.enum_values is not None:
+            result["enum"] = list(self.enum_values)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +257,8 @@ class ToolRegistry:
             value = arguments[argument.name]
             if not isinstance(value, argument.argument_type.python_type):
                 return self._rejected("The requested action contained invalid arguments.")
+            if argument.enum_values is not None and value not in argument.enum_values:
+                return self._rejected("The requested action contained invalid arguments.")
             if argument.resolve_known_folder:
                 value = self._known_folders.resolve(value)
             values.append((argument.name, value))
@@ -300,8 +306,14 @@ def string_argument(
     description: str,
     *,
     resolve_known_folder: bool = False,
+    enum_values: tuple[str, ...] | None = None,
 ) -> ToolArgumentDefinition:
-    return ToolArgumentDefinition(name, description, resolve_known_folder=resolve_known_folder)
+    return ToolArgumentDefinition(
+        name,
+        description,
+        resolve_known_folder=resolve_known_folder,
+        enum_values=enum_values,
+    )
 
 
 def default_tool_definitions(
@@ -433,5 +445,35 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             lambda arguments: (
                 f"Move:\n{arguments['source']}\n→\n{arguments['destination']}"
             ),
+        )
+    if tool.name == "volume_control":
+        return ToolDefinition(
+            tool.name,
+            "Control Windows system volume (volume_up, volume_down, mute_toggle).",
+            (
+                string_argument(
+                    "action",
+                    "Volume action to perform.",
+                    enum_values=("volume_up", "volume_down", "mute_toggle"),
+                ),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Volume control: {arguments['action']}",
+        )
+    if tool.name == "media_control":
+        return ToolDefinition(
+            tool.name,
+            "Control Windows media playback (play_pause, next_track, previous_track).",
+            (
+                string_argument(
+                    "action",
+                    "Media action to perform.",
+                    enum_values=("play_pause", "next_track", "previous_track"),
+                ),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Media control: {arguments['action']}",
         )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")

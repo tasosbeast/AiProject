@@ -21,6 +21,7 @@ from desktop_assistant.filesystem_tools import (
 )
 from desktop_assistant.intent.models import ActionPlan, IntentKind, IntentResult, ToolAction
 from desktop_assistant.known_folders import KnownFolderResolver
+from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
 from desktop_assistant.models import (
     AssistantResponseKind,
     ConfirmationRequest,
@@ -34,7 +35,7 @@ from desktop_assistant.router import CommandRouter
 from desktop_assistant.safety import SafetyPolicy
 from desktop_assistant.tool_registry import ToolDefinition, ToolRegistry, default_tool_definitions, string_argument
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
-from conftest import FakeLauncher, FakeProcessController
+from conftest import FakeLauncher, FakeMediaController, FakeProcessController
 
 
 class FakeProvider:
@@ -56,10 +57,12 @@ def make_test_assistant(
     home: Path | None = None,
     extra_tools: tuple[ToolDefinition, ...] = (),
     confirmation_manager: ConfirmationManager | None = None,
+    media_controller: FakeMediaController | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
     process_controller = process_controller or FakeProcessController()
+    media_controller = media_controller or FakeMediaController()
     tools = list(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -72,6 +75,8 @@ def make_test_assistant(
             CreateFolderTool(validator),
             RenamePathTool(validator),
             MovePathTool(validator),
+            VolumeControlTool(media_controller),
+            MediaControlTool(media_controller),
         )
     )
     tools.extend(extra_tools)
