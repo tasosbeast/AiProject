@@ -37,10 +37,27 @@ def match_window_for_focus(
 
     q_case = q.casefold()
 
-    # 1. Exact normalized title match first
+    # 1. Exact normalized title match
     exact_title_matches = [w for w in windows if w.title.strip().casefold() == q_case]
-    if exact_title_matches:
+    if len(exact_title_matches) == 1:
         return exact_title_matches[0]
+    elif len(exact_title_matches) > 1:
+        # If an exact-title query has multiple matches AND the query is also a valid
+        # AppCatalog alias, trusted AppCatalog process matching may resolve it.
+        app = catalog.resolve(q)
+        if app is not None:
+            trusted_processes = {p.casefold() for p in app.process_names}
+            trusted_matches = [
+                w for w in exact_title_matches
+                if w.executable_name.casefold() in trusted_processes
+            ]
+            if trusted_matches:
+                return trusted_matches[0]
+
+        candidates = ", ".join(
+            f"'{w.title}' ({w.executable_name})" for w in exact_title_matches[:3]
+        )
+        return f"Multiple windows match '{query}': {candidates}. Please specify the exact title."
 
     # 2. AppCatalog aliases such as "VS Code", "Chrome", "Spotify", "Notepad"
     # and match their trusted process_names

@@ -102,6 +102,53 @@ def test_match_window_exact_title_case_insensitive() -> None:
     assert matched.handle == 101
 
 
+def test_match_window_duplicate_exact_title_arbitrary_executables_is_ambiguous() -> None:
+    catalog = AppCatalog()
+    # 1. Arbitrary executables not in AppCatalog
+    w1 = WindowInfo(handle=101, process_id=10, title="Editor", executable_name="editor1.exe")
+    w2 = WindowInfo(handle=102, process_id=20, title="Editor", executable_name="editor2.exe")
+    windows = (w1, w2)
+
+    matched = match_window_for_focus("Editor", windows, catalog)
+    assert isinstance(matched, str)
+    assert "Multiple windows match 'Editor'" in matched
+    assert "'Editor' (editor1.exe)" in matched
+    assert "'Editor' (editor2.exe)" in matched
+
+    # 2. Query is AppCatalog alias ("Notepad") but executables are arbitrary / non-allowlisted
+    w3 = WindowInfo(handle=103, process_id=30, title="Notepad", executable_name="a.exe")
+    w4 = WindowInfo(handle=104, process_id=40, title="Notepad", executable_name="b.exe")
+    windows2 = (w3, w4)
+
+    matched2 = match_window_for_focus("Notepad", windows2, catalog)
+    assert isinstance(matched2, str)
+    assert "Multiple windows match 'Notepad'" in matched2
+    assert "'Notepad' (a.exe)" in matched2
+    assert "'Notepad' (b.exe)" in matched2
+
+
+def test_match_window_duplicate_exact_title_trusted_app_catalog_resolves() -> None:
+    catalog = AppCatalog()
+    # Query is trusted AppCatalog alias ("Notepad"), one is trusted, one is imposter
+    w1 = WindowInfo(handle=201, process_id=10, title="Notepad", executable_name="notepad.exe")
+    w2 = WindowInfo(handle=202, process_id=20, title="Notepad", executable_name="imposter.exe")
+    windows = (w1, w2)
+
+    matched = match_window_for_focus("Notepad", windows, catalog)
+    assert isinstance(matched, WindowInfo)
+    assert matched.handle == 201
+    assert matched.executable_name == "notepad.exe"
+
+    # Both windows are trusted processes -> deterministic choice of top-most
+    w3 = WindowInfo(handle=203, process_id=30, title="Notepad", executable_name="notepad.exe")
+    w4 = WindowInfo(handle=204, process_id=40, title="Notepad", executable_name="notepad.exe")
+    windows_multi = (w3, w4)
+
+    matched_multi = match_window_for_focus("Notepad", windows_multi, catalog)
+    assert isinstance(matched_multi, WindowInfo)
+    assert matched_multi.handle == 203
+
+
 def test_match_window_app_catalog_alias_single() -> None:
     catalog = AppCatalog()
     w1 = WindowInfo(handle=101, process_id=10, title="Inbox - Mail", executable_name="HxMail.exe")
