@@ -66,6 +66,15 @@ class ToolPreparation:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanContext:
+    """Context information when a confirmation request is part of a multi-step plan."""
+
+    step_index: int
+    total_steps: int
+    completed_summaries: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ConfirmationRequest:
     """The limited, immutable confirmation information exposed to adapters."""
 
@@ -73,6 +82,7 @@ class ConfirmationRequest:
     summary: str
     risk_level: RiskLevel
     warning: str
+    plan_context: PlanContext | None = None
 
 
 class AssistantResponseKind(str, Enum):

@@ -28,6 +28,11 @@ def present_response(
         output_fn("Assistant > That confirmation could not be displayed safely.")
         return
     output_fn("Assistant > Confirmation required")
+    if request.plan_context is not None:
+        ctx = request.plan_context
+        output_fn(f"Plan step {ctx.step_index} of {ctx.total_steps}")
+        for summary in ctx.completed_summaries:
+            output_fn(f"  Completed: {summary}")
     output_fn(f"Action: {request.summary}")
     output_fn(f"Risk: {request.risk_level.value.title()}")
     if request.warning:

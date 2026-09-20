@@ -55,7 +55,7 @@ def test_provider_uses_stateless_responses_api_with_single_call_settings() -> No
     request = client.responses.calls[0]
     assert request["model"] == "test-model"
     assert request["store"] is False
-    assert request["parallel_tool_calls"] is False
+    assert request["parallel_tool_calls"] is True
     assert request["tool_choice"] == "required"
 
 
@@ -86,18 +86,76 @@ def test_provider_maps_control_intents_to_application_models() -> None:
     assert unsupported.message == "I cannot do that."
 
 
-def test_multiple_function_calls_are_blocked() -> None:
-    response = SimpleNamespace(
+def test_two_and_three_tool_calls_yield_action_plan_in_order() -> None:
+    two_calls = SimpleNamespace(
         output=[
             function_call("open_app", '{"app_name":"Spotify"}'),
             function_call("open_app", '{"app_name":"Chrome"}'),
         ]
     )
+    result_two = make_provider(FakeClient(two_calls)).resolve("Open Spotify and Chrome")
+    assert result_two.kind is IntentKind.ACTION_PLAN
+    assert result_two.plan is not None
+    assert len(result_two.plan.actions) == 2
+    assert result_two.plan.actions[0].tool_name == "open_app"
+    assert result_two.plan.actions[0].arguments == {"app_name": "Spotify"}
+    assert result_two.plan.actions[1].tool_name == "open_app"
+    assert result_two.plan.actions[1].arguments == {"app_name": "Chrome"}
 
-    result = make_provider(FakeClient(response)).resolve("Open Spotify and Chrome")
+    three_calls = SimpleNamespace(
+        output=[
+            function_call("open_app", '{"app_name":"Chrome"}'),
+            function_call("open_folder", '{"path":"Downloads"}'),
+            function_call("list_folder", '{"path":"Downloads"}'),
+        ]
+    )
+    result_three = make_provider(FakeClient(three_calls)).resolve(
+        "Άνοιξε το Chrome, άνοιξε τα Downloads και δείξε μου τα αρχεία"
+    )
+    assert result_three.kind is IntentKind.ACTION_PLAN
+    assert result_three.plan is not None
+    assert len(result_three.plan.actions) == 3
+    assert [a.tool_name for a in result_three.plan.actions] == [
+        "open_app",
+        "open_folder",
+        "list_folder",
+    ]
 
+
+def test_more_than_three_tool_calls_are_unsupported() -> None:
+    four_calls = SimpleNamespace(
+        output=[
+            function_call("open_app", '{"app_name":"Chrome"}'),
+            function_call("open_app", '{"app_name":"Spotify"}'),
+            function_call("open_app", '{"app_name":"VS Code"}'),
+            function_call("open_app", '{"app_name":"Notepad"}'),
+        ]
+    )
+    result = make_provider(FakeClient(four_calls)).resolve("Open four apps")
     assert result.kind is IntentKind.UNSUPPORTED
-    assert "only one" in (result.message or "")
+    assert "at most 3 actions" in (result.message or "")
+
+
+def test_mixed_control_and_tool_calls_are_unsupported() -> None:
+    mixed = SimpleNamespace(
+        output=[
+            function_call("open_app", '{"app_name":"Chrome"}'),
+            function_call("respond_conversationally", '{"message":"hello"}'),
+        ]
+    )
+    result = make_provider(FakeClient(mixed)).resolve("Mixed request")
+    assert result.kind is IntentKind.UNSUPPORTED
+
+
+def test_multiple_control_calls_are_unsupported() -> None:
+    multi_control = SimpleNamespace(
+        output=[
+            function_call("respond_conversationally", '{"message":"hello"}'),
+            function_call("respond_conversationally", '{"message":"world"}'),
+        ]
+    )
+    result = make_provider(FakeClient(multi_control)).resolve("Multi control")
+    assert result.kind is IntentKind.UNSUPPORTED
 
 
 @pytest.mark.parametrize(

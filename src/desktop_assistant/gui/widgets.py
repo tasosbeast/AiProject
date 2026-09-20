@@ -113,10 +113,29 @@ class ConfirmationCard(QFrame):
         controls.addWidget(confirm)
 
         layout.addWidget(heading)
+        if request.plan_context is not None:
+            ctx = request.plan_context
+            plan_label = QLabel(f"Plan step {ctx.step_index} of {ctx.total_steps}")
+            plan_label.setObjectName("confirmationPlanStep")
+            layout.addWidget(plan_label)
+            if ctx.completed_summaries:
+                completed_text = "Completed:\n" + "\n".join(f"✓ {s}" for s in ctx.completed_summaries)
+                completed_label = QLabel(completed_text)
+                completed_label.setObjectName("confirmationPlanCompleted")
+                completed_label.setWordWrap(True)
+                layout.addWidget(completed_label)
         layout.addWidget(summary)
         layout.addWidget(risk)
         if request.warning:
             layout.addWidget(warning)
+        if request.plan_context is not None:
+            plan_info = QLabel(
+                "If confirmed, this action will run and remaining steps will continue automatically. "
+                "Cancel stops the remaining plan."
+            )
+            plan_info.setObjectName("confirmationPlanInfo")
+            plan_info.setWordWrap(True)
+            layout.addWidget(plan_info)
         layout.addLayout(controls)
 
         self.confirm_button = confirm

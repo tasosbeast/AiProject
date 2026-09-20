@@ -122,6 +122,9 @@ QLabel#confirmationSummary { color: #edf1f7; }
 QLabel#confirmationRisk { color: #e6b85c; font-weight: 650; }
 QFrame#confirmationCard[risk="destructive"] QLabel#confirmationRisk { color: #ef8b96; }
 QLabel#confirmationWarning { color: #aab4c2; font-size: 12px; }
+QLabel#confirmationPlanStep { color: #7cb3ff; font-weight: 650; font-size: 13px; }
+QLabel#confirmationPlanCompleted { color: #8fa0b5; font-size: 12px; }
+QLabel#confirmationPlanInfo { color: #8fa0b5; font-size: 12px; }
 
 QPushButton#confirmationCancel,
 QPushButton#confirmationConfirm {

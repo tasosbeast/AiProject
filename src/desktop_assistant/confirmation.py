@@ -8,7 +8,13 @@ from threading import RLock
 from time import monotonic
 from uuid import uuid4
 
-from desktop_assistant.models import ConfirmationRequest, RiskLevel, ToolArguments, ToolResult
+from desktop_assistant.models import (
+    ConfirmationRequest,
+    PlanContext,
+    RiskLevel,
+    ToolArguments,
+    ToolResult,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -69,7 +75,11 @@ class ConfirmationManager:
             self._expire_if_needed()
             return self._pending is not None
 
-    def request(self, action: PreparedAction) -> ConfirmationRequest | None:
+    def request(
+        self,
+        action: PreparedAction,
+        plan_context: PlanContext | None = None,
+    ) -> ConfirmationRequest | None:
         with self._lock:
             if self.has_pending():
                 return None
@@ -88,6 +98,7 @@ class ConfirmationManager:
                 summary=action.summary,
                 risk_level=action.risk_level,
                 warning=action.warning,
+                plan_context=plan_context,
             )
 
     def approve(self, confirmation_id: str) -> ConfirmationResolution:

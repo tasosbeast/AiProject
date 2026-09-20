@@ -12,6 +12,7 @@ from desktop_assistant.confirmation import ConfirmationManager, ConfirmationOutc
 from desktop_assistant.known_folders import KnownFolderResolver
 from desktop_assistant.models import (
     ConfirmationRequest,
+    PlanContext,
     RiskLevel,
     ToolArguments,
     ToolPreparation,
@@ -147,21 +148,30 @@ class ToolRegistry:
             registry_token=self._registry_token,
         )
 
+    def dispatch_prepared(
+        self,
+        prepared: PreparedAction,
+        plan_context: PlanContext | None = None,
+    ) -> RegistryOutcome:
+        if not isinstance(prepared, PreparedAction) or prepared.registry_token is not self._registry_token:
+            return self._rejected("The prepared action is invalid.")
+        decision = self._safety_policy.evaluate(prepared.risk_level)
+        if decision is AuthorizationDecision.ALLOW:
+            return self._execute_prepared(prepared)
+        if decision is AuthorizationDecision.REQUIRE_CONFIRMATION:
+            request = self._confirmations.request(prepared, plan_context=plan_context)
+            if request is not None:
+                return request
+            return self._rejected("A confirmation is already pending.")
+        return self._rejected("That action is not permitted by the safety policy.")
+
     def execute(self, tool_name: str, arguments: object) -> RegistryOutcome:
         if self._confirmations.has_pending():
             return self._rejected("Confirm or cancel the pending action before starting another request.")
         prepared = self.prepare(tool_name, arguments)
         if isinstance(prepared, ToolResult):
             return prepared
-        decision = self._safety_policy.evaluate(prepared.risk_level)
-        if decision is AuthorizationDecision.ALLOW:
-            return self._execute_prepared(prepared)
-        if decision is AuthorizationDecision.REQUIRE_CONFIRMATION:
-            request = self._confirmations.request(prepared)
-            if request is not None:
-                return request
-            return self._rejected("A confirmation is already pending.")
-        return self._rejected("That action is not permitted by the safety policy.")
+        return self.dispatch_prepared(prepared)
 
     def confirm(self, confirmation_id: str) -> ToolResult:
         resolution = self._confirmations.approve(confirmation_id)
