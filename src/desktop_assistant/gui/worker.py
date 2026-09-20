@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 from collections.abc import Callable
@@ -67,7 +68,13 @@ class ActionWorker(QRunnable):
     """Runs an authorized local must-finish action (e.g. Assistant.confirm, filesystem mutations).
 
     Uses a non-daemon thread so that interpreter shutdown does not terminate local operations
-    mid-mutation. Shutdown coordinates with wait_completion() to allow bounded time to finish.
+    mid-mutation.
+
+    Shutdown Semantics:
+    During application shutdown, wait_completion(timeout) allows UI shutdown to wait for
+    completion. If a must-finish mutation takes longer than the short UI shutdown timeout,
+    the UI closes and stops accepting work, while Python process termination safely waits for
+    the non-daemon thread to finish without mid-mutation interruption or force-kill.
     """
 
     def __init__(self, operation: Callable[[], object]) -> None:
@@ -116,8 +123,6 @@ class ActionWorker(QRunnable):
 BackgroundWorker = NetworkWorker
 
 
-import inspect
-
 class AssistantWorker(NetworkWorker):
     """Runs an assistant routing request with an explicit cancellation token."""
 
@@ -129,22 +134,22 @@ class AssistantWorker(NetworkWorker):
     ) -> None:
         token = cancellation_token or CancellationToken()
 
-        def _call() -> object:
-            try:
-                sig = inspect.signature(handler)
-                if "cancellation_token" in sig.parameters or any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-                ):
-                    return handler(command, cancellation_token=token)
-                return handler(command)
-            except (ValueError, TypeError):
-                pass
-            try:
-                return handler(command, cancellation_token=token)
-            except TypeError:
-                return handler(command)
+        supports_cancellation = False
+        try:
+            sig = inspect.signature(handler)
+            if "cancellation_token" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            ):
+                supports_cancellation = True
+        except (ValueError, TypeError):
+            supports_cancellation = False
+
+        if supports_cancellation:
+            operation = lambda: handler(command, cancellation_token=token)
+        else:
+            operation = lambda: handler(command)
 
         super().__init__(
-            _call,
+            operation,
             cancellation_token=token,
         )

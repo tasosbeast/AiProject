@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 import logging
+import threading
+from typing import Any
 
 from desktop_assistant.cancellation import CancellationToken
 from desktop_assistant.intent.models import IntentKind, IntentResult
@@ -31,6 +31,7 @@ class Assistant:
         self._tool_registry = tool_registry
         self._intent_provider = intent_provider
         self._shutting_down = False
+        self._execution_lock = threading.Lock()
 
     def handle(
         self,
@@ -38,7 +39,7 @@ class Assistant:
         *,
         cancellation_token: CancellationToken | None = None,
     ) -> AssistantResponse:
-        if self._shutting_down or (cancellation_token is not None and cancellation_token.is_cancelled):
+        if self._is_cancelled(cancellation_token):
             return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
 
         if self._tool_registry.has_pending_confirmation():
@@ -52,12 +53,29 @@ class Assistant:
 
         deterministic = self._router.route_detailed(request)
         if deterministic.recognized:
-            if self._shutting_down or (cancellation_token is not None and cancellation_token.is_cancelled):
-                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
-            return self._response(deterministic.result)
+            if deterministic.direct_result is not None:
+                if self._is_cancelled(cancellation_token):
+                    return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+                return self._completed(deterministic.direct_result)
+
+            if deterministic.action is not None:
+                return self._execute_action(
+                    deterministic.action.tool_name,
+                    deterministic.action.arguments,
+                    cancellation_token=cancellation_token,
+                )
 
         if self._intent_provider is None:
-            return self._completed(deterministic.result)
+            if self._is_cancelled(cancellation_token):
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+            return self._completed(
+                deterministic.fallback_result
+                or ToolResult(
+                    False,
+                    "I did not understand that command. Type 'help' to see supported commands.",
+                    RiskLevel.SAFE,
+                )
+            )
 
         try:
             intent = self._intent_provider.resolve(request)
@@ -72,12 +90,23 @@ class Assistant:
                 ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
             )
 
-        # Cancellation boundary: verify before executing any resolved tool action
-        if self._shutting_down or (cancellation_token is not None and cancellation_token.is_cancelled):
-            logger.info("Intent resolved after cancellation/shutdown; discarding tool execution")
-            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+        if intent.kind is IntentKind.CONVERSATION:
+            if self._is_cancelled(cancellation_token):
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+            return self._completed(ToolResult(True, intent.message or "How can I help?", RiskLevel.SAFE))
 
-        return self._response(self._resolve_intent(intent))
+        if intent.kind is IntentKind.TOOL_ACTION:
+            if intent.action is None:
+                return self._completed(ToolResult(False, "The requested action was invalid.", RiskLevel.SAFE))
+            return self._execute_action(
+                intent.action.tool_name,
+                intent.action.arguments,
+                cancellation_token=cancellation_token,
+            )
+
+        return self._completed(
+            ToolResult(False, intent.message or "That action is not supported yet.", RiskLevel.SAFE)
+        )
 
     def confirm(self, confirmation_id: str) -> AssistantResponse:
         """Approve the exact already-prepared action without re-routing it."""
@@ -95,21 +124,26 @@ class Assistant:
     def shutdown(self) -> None:
         """Discard session-only authorization state during application shutdown."""
 
-        self._shutting_down = True
-        self._tool_registry.discard_pending_confirmation()
+        with self._execution_lock:
+            self._shutting_down = True
+            self._tool_registry.discard_pending_confirmation()
 
-    def _resolve_intent(self, intent: IntentResult) -> RegistryOutcome:
-        if intent.kind is IntentKind.TOOL_ACTION:
-            if intent.action is None:
-                return ToolResult(False, "The requested action was invalid.", RiskLevel.SAFE)
-            return self._tool_registry.execute(intent.action.tool_name, intent.action.arguments)
-        if intent.kind is IntentKind.CONVERSATION:
-            return ToolResult(True, intent.message or "How can I help?", RiskLevel.SAFE)
-        return ToolResult(
-            False,
-            intent.message or "That action is not supported yet.",
-            RiskLevel.SAFE,
-        )
+    def _execute_action(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        with self._execution_lock:
+            if self._is_cancelled(cancellation_token):
+                logger.info("Tool action '%s' discarded before execution due to cancellation/shutdown", tool_name)
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+            outcome = self._tool_registry.execute(tool_name, arguments)
+            return self._response(outcome)
+
+    def _is_cancelled(self, token: CancellationToken | None) -> bool:
+        return self._shutting_down or (token is not None and token.is_cancelled)
 
     @staticmethod
     def _response(outcome: RegistryOutcome) -> AssistantResponse:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from desktop_assistant.config import AppCatalog
-from desktop_assistant.router import CommandRouter
 from desktop_assistant.models import ConfirmationRequest, ToolResult
+from desktop_assistant.router import CommandRouter, DeterministicAction
 from conftest import FakeLauncher, FakeProcessController, make_registry
 
 
@@ -47,10 +47,13 @@ def test_rejects_arbitrary_shell_commands() -> None:
 
 
 def test_recognized_unknown_executable_is_not_an_unmatched_command() -> None:
-    decision = make_router(FakeLauncher()).route_detailed("open malware.exe")
+    router = make_router(FakeLauncher())
+    decision = router.route_detailed("open malware.exe")
 
     assert decision.recognized
-    assert not decision.result.success
+    assert decision.action == DeterministicAction("open_app", {"app_name": "malware.exe"})
+    result = router.route("open malware.exe")
+    assert not result.success
 
 
 def test_natural_language_request_is_left_for_optional_provider() -> None:
@@ -95,7 +98,11 @@ def test_routes_app_status_and_close_app_deterministically() -> None:
 
 
 def test_recognized_invalid_close_app_never_falls_through_to_provider() -> None:
-    decision = make_router(FakeLauncher()).route_detailed("close app explorer")
+    router = make_router(FakeLauncher())
+    decision = router.route_detailed("close app explorer")
 
     assert decision.recognized
-    assert isinstance(decision.result, ToolResult) and not decision.result.success
+    assert decision.action == DeterministicAction("close_app", {"app_name": "explorer"})
+    result = router.route("close app explorer")
+    assert isinstance(result, ToolResult) and not result.success
+

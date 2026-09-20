@@ -483,3 +483,68 @@ def test_perform_shutdown_cancels_network_worker_without_waiting(qt_app: QApplic
     unblock_network.set()
 
 
+def test_assistant_worker_calls_cancellation_aware_handler_once(qt_app: QApplication) -> None:
+    from desktop_assistant.cancellation import CancellationToken
+    from desktop_assistant.gui.worker import AssistantWorker
+
+    calls = []
+    token = CancellationToken()
+
+    def handler(command: str, cancellation_token: CancellationToken) -> str:
+        calls.append((command, cancellation_token))
+        return "result"
+
+    worker = AssistantWorker(handler, "test-cmd", cancellation_token=token)
+    results = []
+    worker.signals.succeeded.connect(results.append)
+    worker.run()
+
+    wait_until(qt_app, lambda: len(results) == 1)
+    assert len(calls) == 1
+    assert calls[0] == ("test-cmd", token)
+    assert results == ["result"]
+
+
+def test_assistant_worker_calls_legacy_handler_once(qt_app: QApplication) -> None:
+    from desktop_assistant.gui.worker import AssistantWorker
+
+    calls = []
+
+    def legacy_handler(command: str) -> str:
+        calls.append(command)
+        return "legacy-result"
+
+    worker = AssistantWorker(legacy_handler, "test-cmd")
+    results = []
+    worker.signals.succeeded.connect(results.append)
+    worker.run()
+
+    wait_until(qt_app, lambda: len(results) == 1)
+    assert len(calls) == 1
+    assert calls == ["test-cmd"]
+    assert results == ["legacy-result"]
+
+
+def test_assistant_worker_does_not_retry_on_business_logic_type_error(qt_app: QApplication) -> None:
+    from desktop_assistant.gui.worker import AssistantWorker
+
+    invocation_count = [0]
+
+    def faulty_handler(command: str, cancellation_token=None) -> str:
+        invocation_count[0] += 1
+        raise TypeError("Simulated internal TypeError in business logic")
+
+    worker = AssistantWorker(faulty_handler, "test-cmd")
+    failed = []
+    succeeded = []
+    worker.signals.failed.connect(lambda: failed.append(True))
+    worker.signals.succeeded.connect(succeeded.append)
+    worker.run()
+
+    wait_until(qt_app, lambda: len(failed) == 1)
+    assert invocation_count == [1]
+    assert succeeded == []
+    assert failed == [True]
+
+
+

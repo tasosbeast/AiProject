@@ -310,3 +310,84 @@ def test_shutdown_assistant_handle_prevents_all_tool_execution(tmp_path: Path) -
     assert response.confirmation is None
     assert not target.exists()
     assert not assistant.has_pending_confirmation()
+
+
+def test_deterministic_open_app_cancelled_after_parse_has_no_side_effects() -> None:
+    from desktop_assistant.cancellation import CancellationToken
+
+    launcher = FakeLauncher()
+    provider = FakeProvider()
+    token = CancellationToken()
+
+    assistant = make_assistant(launcher, provider)
+
+    # Simulate race: token is cancelled right after parsing
+    class RaceRouter:
+        def __init__(self, original):
+            self.original = original
+
+        def route_detailed(self, command: str):
+            decision = self.original.route_detailed(command)
+            token.cancel()
+            return decision
+
+    assistant._router = RaceRouter(assistant._router)  # type: ignore[assignment]
+    response = assistant.handle("open notepad", cancellation_token=token)
+
+    assert not response.success
+    assert response.confirmation is None
+    assert launcher.apps == []
+    assert provider.calls == []
+
+
+def test_deterministic_open_website_shutdown_after_parse_has_no_side_effects() -> None:
+    launcher = FakeLauncher()
+    provider = FakeProvider()
+    assistant = make_assistant(launcher, provider)
+
+    class RaceRouter:
+        def __init__(self, original):
+            self.original = original
+
+        def route_detailed(self, command: str):
+            decision = self.original.route_detailed(command)
+            assistant.shutdown()
+            return decision
+
+    assistant._router = RaceRouter(assistant._router)  # type: ignore[assignment]
+    response = assistant.handle("open website https://example.com")
+
+    assert not response.success
+    assert response.confirmation is None
+    assert launcher.websites == []
+    assert provider.calls == []
+
+
+def test_deterministic_close_app_cancelled_after_parse_creates_no_confirmation_and_no_side_effects() -> None:
+    from desktop_assistant.cancellation import CancellationToken
+
+    controller = FakeProcessController({"Notepad"})
+    launcher = FakeLauncher()
+    provider = FakeProvider()
+    token = CancellationToken()
+
+    assistant = make_assistant(launcher, provider, process_controller=controller)
+
+    class RaceRouter:
+        def __init__(self, original):
+            self.original = original
+
+        def route_detailed(self, command: str):
+            decision = self.original.route_detailed(command)
+            token.cancel()
+            return decision
+
+    assistant._router = RaceRouter(assistant._router)  # type: ignore[assignment]
+    response = assistant.handle("close app notepad", cancellation_token=token)
+
+    assert not response.success
+    assert response.confirmation is None
+    assert not assistant.has_pending_confirmation()
+    assert controller.close_calls == []
+    assert provider.calls == []
+
