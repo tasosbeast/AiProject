@@ -37,6 +37,7 @@ from desktop_assistant.safety import SafetyPolicy
 from desktop_assistant.tool_registry import ToolDefinition, ToolRegistry, default_tool_definitions, string_argument
 from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
+from desktop_assistant.windows import FocusWindowTool, WindowInfoTool
 from conftest import (
     FakeLauncher,
     FakeMediaController,
@@ -44,6 +45,7 @@ from conftest import (
     FakeProjectTaskRunner,
     FakeSystemStatusCollector,
     FakeVSCodeLauncher,
+    FakeWindowController,
 )
 
 
@@ -71,6 +73,7 @@ def make_test_assistant(
     project_catalog: ProjectCatalog | None = None,
     vscode_launcher: FakeVSCodeLauncher | None = None,
     task_runner: FakeProjectTaskRunner | None = None,
+    window_controller: FakeWindowController | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -80,6 +83,7 @@ def make_test_assistant(
     project_catalog = project_catalog or ProjectCatalog()
     vscode_launcher = vscode_launcher or FakeVSCodeLauncher()
     task_runner = task_runner or FakeProjectTaskRunner()
+    window_controller = window_controller or FakeWindowController()
     tools = list(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -97,6 +101,8 @@ def make_test_assistant(
             SystemStatusTool(system_status_collector),
             OpenProjectTool(project_catalog, vscode_launcher),
             RunProjectTaskTool(project_catalog, task_runner),
+            WindowInfoTool(window_controller),
+            FocusWindowTool(window_controller, catalog),
         )
     )
     tools.extend(extra_tools)

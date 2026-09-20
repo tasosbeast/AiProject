@@ -25,6 +25,29 @@ class AppProcessController(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class WindowInfo:
+    handle: int
+    process_id: int
+    title: str
+    executable_name: str
+    minimized: bool = False
+
+
+class WindowController(Protocol):
+    def visible_windows(self) -> tuple[WindowInfo, ...]: ...
+
+    def get_foreground_window(self) -> WindowInfo | None: ...
+
+    def is_window_valid(self, handle: int, expected_process_id: int) -> bool: ...
+
+    def is_minimized(self, handle: int) -> bool: ...
+
+    def restore_window(self, handle: int) -> bool: ...
+
+    def set_foreground_window(self, handle: int) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
 class _ProcessEntry:
     process_id: int
     executable_name: str
@@ -96,6 +119,55 @@ class WindowsAppProcessController:
         )
 
 
+class _WindowApi(Protocol):
+    def visible_windows(self, max_count: int = 30) -> tuple[WindowInfo, ...]: ...
+
+    def get_foreground_window(self) -> WindowInfo | None: ...
+
+    def is_window(self, handle: int) -> bool: ...
+
+    def get_window_thread_process_id(self, handle: int) -> int: ...
+
+    def is_iconic(self, handle: int) -> bool: ...
+
+    def show_window(self, handle: int, cmd: int) -> bool: ...
+
+    def set_foreground_window(self, handle: int) -> bool: ...
+
+
+class WindowsWindowController:
+    """Windows window enumeration and focus control boundary."""
+
+    def __init__(self, api: _WindowApi | None = None) -> None:
+        self._api = api or _Win32ProcessApi()
+
+    def visible_windows(self) -> tuple[WindowInfo, ...]:
+        try:
+            return self._api.visible_windows()
+        except OSError as exc:
+            raise ProcessControlError("Windows could not inspect visible windows.") from exc
+
+    def get_foreground_window(self) -> WindowInfo | None:
+        try:
+            return self._api.get_foreground_window()
+        except OSError as exc:
+            raise ProcessControlError("Windows could not inspect active window.") from exc
+
+    def is_window_valid(self, handle: int, expected_process_id: int) -> bool:
+        if not self._api.is_window(handle):
+            return False
+        return self._api.get_window_thread_process_id(handle) == expected_process_id
+
+    def is_minimized(self, handle: int) -> bool:
+        return self._api.is_iconic(handle)
+
+    def restore_window(self, handle: int) -> bool:
+        return self._api.show_window(handle, 9)  # SW_RESTORE = 9
+
+    def set_foreground_window(self, handle: int) -> bool:
+        return self._api.set_foreground_window(handle)
+
+
 class _Win32ProcessApi:
     _TH32CS_SNAPPROCESS = 0x00000002
     _WM_CLOSE = 0x0010
@@ -159,6 +231,24 @@ class _Win32ProcessApi:
             wintypes.LPARAM,
         )
         self._user32.PostMessageW.restype = wintypes.BOOL
+        self._user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+        self._user32.GetWindowTextLengthW.restype = ctypes.c_int
+        self._user32.GetWindowTextW.argtypes = (
+            wintypes.HWND,
+            wintypes.LPWSTR,
+            ctypes.c_int,
+        )
+        self._user32.GetWindowTextW.restype = ctypes.c_int
+        self._user32.GetForegroundWindow.argtypes = ()
+        self._user32.GetForegroundWindow.restype = wintypes.HWND
+        self._user32.IsWindow.argtypes = (wintypes.HWND,)
+        self._user32.IsWindow.restype = wintypes.BOOL
+        self._user32.IsIconic.argtypes = (wintypes.HWND,)
+        self._user32.IsIconic.restype = wintypes.BOOL
+        self._user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+        self._user32.ShowWindow.restype = wintypes.BOOL
+        self._user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+        self._user32.SetForegroundWindow.restype = wintypes.BOOL
 
     def processes(self) -> tuple[_ProcessEntry, ...]:
         snapshot = self._kernel32.CreateToolhelp32Snapshot(self._TH32CS_SNAPPROCESS, 0)
@@ -204,3 +294,107 @@ class _Win32ProcessApi:
 
     def post_close(self, window_handle: int) -> bool:
         return bool(self._user32.PostMessageW(window_handle, self._WM_CLOSE, 0, 0))
+
+    def visible_windows(self, max_count: int = 30) -> tuple[WindowInfo, ...]:
+        from ctypes import wintypes
+
+        try:
+            process_map = {p.process_id: p.executable_name for p in self.processes()}
+        except Exception:
+            process_map = {}
+
+        windows: list[WindowInfo] = []
+
+        @self._enum_callback_type
+        def collect(window_handle: int, _parameter: int) -> bool:
+            if not self._user32.IsWindowVisible(window_handle):
+                return True
+            length = self._user32.GetWindowTextLengthW(window_handle)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            self._user32.GetWindowTextW(window_handle, buf, length + 1)
+            title = buf.value.strip()
+            if not title:
+                return True
+            bounded_title = title[:120]
+
+            process_id = wintypes.DWORD()
+            self._user32.GetWindowThreadProcessId(window_handle, ctypes.byref(process_id))
+            pid = int(process_id.value)
+            exe_name = process_map.get(pid, "")
+            is_minimized = bool(self._user32.IsIconic(window_handle))
+
+            windows.append(
+                WindowInfo(
+                    handle=int(window_handle),
+                    process_id=pid,
+                    title=bounded_title,
+                    executable_name=exe_name,
+                    minimized=is_minimized,
+                )
+            )
+            if len(windows) >= max_count:
+                return False
+            return True
+
+        ctypes.set_last_error(0)
+        if not self._user32.EnumWindows(collect, 0):
+            error_code = ctypes.get_last_error()
+            if error_code != 0 and len(windows) < max_count:
+                raise ctypes.WinError(error_code)
+        return tuple(windows)
+
+    def get_foreground_window(self) -> WindowInfo | None:
+        from ctypes import wintypes
+
+        handle = self._user32.GetForegroundWindow()
+        if not handle or not self._user32.IsWindow(handle):
+            return None
+
+        length = self._user32.GetWindowTextLengthW(handle)
+        if length <= 0:
+            return None
+        buf = ctypes.create_unicode_buffer(length + 1)
+        self._user32.GetWindowTextW(handle, buf, length + 1)
+        title = buf.value.strip()
+        if not title:
+            return None
+        bounded_title = title[:120]
+
+        process_id = wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(handle, ctypes.byref(process_id))
+        pid = int(process_id.value)
+        try:
+            process_map = {p.process_id: p.executable_name for p in self.processes()}
+            exe_name = process_map.get(pid, "")
+        except Exception:
+            exe_name = ""
+
+        is_minimized = bool(self._user32.IsIconic(handle))
+        return WindowInfo(
+            handle=int(handle),
+            process_id=pid,
+            title=bounded_title,
+            executable_name=exe_name,
+            minimized=is_minimized,
+        )
+
+    def is_window(self, handle: int) -> bool:
+        return bool(self._user32.IsWindow(handle))
+
+    def get_window_thread_process_id(self, handle: int) -> int:
+        from ctypes import wintypes
+
+        pid = wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+        return int(pid.value)
+
+    def is_iconic(self, handle: int) -> bool:
+        return bool(self._user32.IsIconic(handle))
+
+    def show_window(self, handle: int, cmd: int) -> bool:
+        return bool(self._user32.ShowWindow(handle, cmd))
+
+    def set_foreground_window(self, handle: int) -> bool:
+        return bool(self._user32.SetForegroundWindow(handle))

@@ -170,6 +170,58 @@ class FakeProjectTaskRunner:
         )
 
 
+from desktop_assistant.windows import (
+    FocusWindowTool,
+    WindowInfo,
+    WindowInfoTool,
+)
+
+
+class FakeWindowController:
+    def __init__(
+        self,
+        windows: tuple[WindowInfo, ...] = (),
+        active_window: WindowInfo | None = None,
+        focus_succeeds: bool = True,
+    ) -> None:
+        self.windows = list(windows)
+        self.active_window = active_window
+        self.focus_succeeds = focus_succeeds
+        self.restored_handles: list[int] = []
+        self.focused_handles: list[int] = []
+        self.valid_handles: set[int] = {w.handle for w in windows}
+
+    def visible_windows(self) -> tuple[WindowInfo, ...]:
+        return tuple(self.windows)
+
+    def get_foreground_window(self) -> WindowInfo | None:
+        return self.active_window
+
+    def is_window_valid(self, handle: int, expected_process_id: int) -> bool:
+        if handle not in self.valid_handles:
+            return False
+        for w in self.windows:
+            if w.handle == handle:
+                return w.process_id == expected_process_id
+        return False
+
+    def is_minimized(self, handle: int) -> bool:
+        for w in self.windows:
+            if w.handle == handle:
+                return w.minimized
+        return False
+
+    def restore_window(self, handle: int) -> bool:
+        self.restored_handles.append(handle)
+        return True
+
+    def set_foreground_window(self, handle: int) -> bool:
+        if self.focus_succeeds:
+            self.focused_handles.append(handle)
+            return True
+        return False
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -181,6 +233,7 @@ def make_registry(
     project_catalog: ProjectCatalog | None = None,
     vscode_launcher: FakeVSCodeLauncher | None = None,
     task_runner: FakeProjectTaskRunner | None = None,
+    window_controller: FakeWindowController | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -190,6 +243,7 @@ def make_registry(
     project_catalog = project_catalog or ProjectCatalog()
     vscode_launcher = vscode_launcher or FakeVSCodeLauncher()
     task_runner = task_runner or FakeProjectTaskRunner()
+    window_controller = window_controller or FakeWindowController()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -207,6 +261,8 @@ def make_registry(
             SystemStatusTool(system_status_collector),
             OpenProjectTool(project_catalog, vscode_launcher),
             RunProjectTaskTool(project_catalog, task_runner),
+            WindowInfoTool(window_controller),
+            FocusWindowTool(window_controller, catalog),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

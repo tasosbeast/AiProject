@@ -34,6 +34,7 @@ from desktop_assistant.media_control import MediaControlTool, VolumeControlTool
 from desktop_assistant.projects import OpenProjectTool, ProjectCatalog, RunProjectTaskTool
 from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
+from desktop_assistant.windows import FocusWindowTool, WindowInfoTool
 
 
 class NoopLauncher:
@@ -92,6 +93,26 @@ class NoopProjectTaskRunner:
         raise AssertionError("Live smoke test must NEVER execute run_task")
 
 
+class NoopWindowController:
+    def visible_windows(self) -> tuple[object, ...]:
+        raise AssertionError("Live smoke test must NEVER execute visible_windows")
+
+    def get_foreground_window(self) -> object | None:
+        raise AssertionError("Live smoke test must NEVER execute get_foreground_window")
+
+    def is_window_valid(self, handle: object, expected_process_id: object) -> bool:
+        raise AssertionError("Live smoke test must NEVER execute is_window_valid")
+
+    def is_minimized(self, handle: object) -> bool:
+        raise AssertionError("Live smoke test must NEVER execute is_minimized")
+
+    def restore_window(self, handle: object) -> bool:
+        raise AssertionError("Live smoke test must NEVER execute restore_window")
+
+    def set_foreground_window(self, handle: object) -> bool:
+        raise AssertionError("Live smoke test must NEVER execute set_foreground_window")
+
+
 def make_smoke_registry() -> ToolRegistry:
     from desktop_assistant.config import AppCatalog
 
@@ -104,6 +125,7 @@ def make_smoke_registry() -> ToolRegistry:
     project_catalog = ProjectCatalog()
     vscode_launcher = NoopVSCodeLauncher()
     task_runner = NoopProjectTaskRunner()
+    window_controller = NoopWindowController()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),  # type: ignore[arg-type]
@@ -121,6 +143,8 @@ def make_smoke_registry() -> ToolRegistry:
             SystemStatusTool(system_status_collector),  # type: ignore[arg-type]
             OpenProjectTool(project_catalog, vscode_launcher),  # type: ignore[arg-type]
             RunProjectTaskTool(project_catalog, task_runner),  # type: ignore[arg-type]
+            WindowInfoTool(window_controller),  # type: ignore[arg-type]
+            FocusWindowTool(window_controller, catalog),  # type: ignore[arg-type]
         )
     )
 

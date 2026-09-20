@@ -527,4 +527,33 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             tool.confirmation_summary if hasattr(tool, "confirmation_summary") else (lambda arguments: f"Run {arguments['task']} for {arguments['project_name']}"),
             "This will execute the project test suite in a local subprocess.",
         )
+    if tool.name == "window_info":
+        return ToolDefinition(
+            tool.name,
+            "Inspect visible top-level windows or identify the active foreground window.",
+            (
+                string_argument(
+                    "action",
+                    "Action to perform ('list' or 'active').",
+                    enum_values=getattr(tool, "allowed_actions", ("list", "active")),
+                ),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Window info: {arguments.get('action', '')}",
+        )
+    if tool.name == "focus_window":
+        return ToolDefinition(
+            tool.name,
+            "Bring an existing visible window to the foreground by name, title, or application.",
+            (
+                string_argument(
+                    "query",
+                    "Title, name, or application of the window to focus.",
+                ),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Focus window: {arguments.get('query', '')}",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")

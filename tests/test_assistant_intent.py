@@ -24,6 +24,7 @@ from desktop_assistant.router import CommandRouter
 from desktop_assistant.system_status import SystemStatusTool
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
+from desktop_assistant.windows import FocusWindowTool, WindowInfoTool
 
 from conftest import (
     FakeLauncher,
@@ -32,6 +33,7 @@ from conftest import (
     FakeProjectTaskRunner,
     FakeSystemStatusCollector,
     FakeVSCodeLauncher,
+    FakeWindowController,
 )
 
 
@@ -61,6 +63,7 @@ def make_assistant(
     project_catalog: ProjectCatalog | None = None,
     vscode_launcher: FakeVSCodeLauncher | None = None,
     task_runner: FakeProjectTaskRunner | None = None,
+    window_controller: FakeWindowController | None = None,
 ) -> Assistant:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -70,6 +73,7 @@ def make_assistant(
     project_catalog = project_catalog or ProjectCatalog()
     vscode_launcher = vscode_launcher or FakeVSCodeLauncher()
     task_runner = task_runner or FakeProjectTaskRunner()
+    window_controller = window_controller or FakeWindowController()
     registry = ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -87,6 +91,8 @@ def make_assistant(
             SystemStatusTool(system_status_collector),
             OpenProjectTool(project_catalog, vscode_launcher),
             RunProjectTaskTool(project_catalog, task_runner),
+            WindowInfoTool(window_controller),
+            FocusWindowTool(window_controller, catalog),
         ),
         known_folders=KnownFolderResolver(home),
     )

@@ -101,6 +101,18 @@ class CommandRouter:
         r"^(?:run\s+tests|run\s+aiproject\s+tests|test\s+aiproject)$",
         re.IGNORECASE,
     )
+    _window_list = re.compile(
+        r"^(?:list\s+(?:open\s+)?windows|show\s+windows|windows)$",
+        re.IGNORECASE,
+    )
+    _window_active = re.compile(
+        r"^(?:active\s+window|current\s+window|what(?:\'?s|\s+is)\s+the\s+active\s+window)$",
+        re.IGNORECASE,
+    )
+    _window_focus = re.compile(
+        r"^(?:focus|switch\s+to)\s+(.+)$",
+        re.IGNORECASE,
+    )
 
     def __init__(self, registry: ToolRegistry | None = None, catalog: AppCatalog | None = None) -> None:
         self._registry = registry
@@ -276,6 +288,27 @@ class CommandRouter:
                 action=DeterministicAction("run_project_task", {"project_name": "AiProject", "task": "tests"}),
             )
 
+        if self._window_list.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("window_info", {"action": "list"}),
+            )
+
+        if self._window_active.fullmatch(text):
+            return RouteDecision(
+                recognized=True,
+                action=DeterministicAction("window_info", {"action": "active"}),
+            )
+
+        focus_match = self._window_focus.fullmatch(text)
+        if focus_match:
+            query = focus_match.group(1).strip()
+            if query:
+                return RouteDecision(
+                    recognized=True,
+                    action=DeterministicAction("focus_window", {"query": query}),
+                )
+
         return RouteDecision(
             recognized=False,
             fallback_result=ToolResult(
@@ -312,6 +345,7 @@ class CommandRouter:
             "  volume up | volume down | mute\n"
             "  play | pause | next track | previous track\n"
             "  cpu | memory | battery | disk | system status\n"
+            "  windows | active window | focus <name>\n"
             "  help\n"
             "  exit"
         )

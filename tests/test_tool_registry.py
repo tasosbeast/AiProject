@@ -25,6 +25,8 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "system_status",
         "open_project",
         "run_project_task",
+        "window_info",
+        "focus_window",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
@@ -84,6 +86,25 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         },
     }
 
+    win_info = next(schema for schema in schemas if schema["name"] == "window_info")
+    assert win_info["parameters"]["required"] == ["action"]
+    assert win_info["parameters"]["properties"] == {
+        "action": {
+            "type": "string",
+            "description": "Action to perform ('list' or 'active').",
+            "enum": ["list", "active"],
+        },
+    }
+
+    focus = next(schema for schema in schemas if schema["name"] == "focus_window")
+    assert focus["parameters"]["required"] == ["query"]
+    assert focus["parameters"]["properties"] == {
+        "query": {
+            "type": "string",
+            "description": "Title, name, or application of the window to focus.",
+        },
+    }
+
     rename = next(schema for schema in schemas if schema["name"] == "rename_path")
     assert rename["parameters"]["required"] == ["source", "destination"]
     assert rename["parameters"]["properties"] == {
@@ -131,6 +152,13 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
         registry.execute("run_project_task", {"project_name": "Other", "task": "tests"}),
         registry.execute("run_project_task", {"project_name": "AiProject"}),
         registry.execute("run_project_task", {}),
+        registry.execute("window_info", {"action": "minimize"}),
+        registry.execute("window_info", {"action": 123}),
+        registry.execute("window_info", {}),
+        registry.execute("focus_window", {"query": 123}),
+        registry.execute("focus_window", {}),
+        registry.execute("focus_window", {"handle": 12345}),
+        registry.execute("focus_window", {"pid": 54321}),
     )
 
     assert all(not result.success for result in results)
@@ -138,7 +166,8 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
 
 
 def test_production_schemas_have_no_delete_or_shell_capability() -> None:
-    names = {schema["name"] for schema in make_registry(FakeLauncher()).schemas()}
+    schemas = make_registry(FakeLauncher()).schemas()
+    names = {schema["name"] for schema in schemas}
 
     assert not names & {
         "delete_file",
@@ -148,6 +177,9 @@ def test_production_schemas_have_no_delete_or_shell_capability() -> None:
         "powershell",
         "cmd",
     }
+    assert not any("handle" in s["parameters"].get("properties", {}) for s in schemas)
+    assert not any("pid" in s["parameters"].get("properties", {}) for s in schemas)
+    assert not any("hwnd" in s["parameters"].get("properties", {}) for s in schemas)
 
 
 def test_registry_keeps_safety_policy_in_execution_path() -> None:

@@ -177,6 +177,41 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "window_info",
+        "description": "Inspect visible top-level windows or identify the active foreground window.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Action to perform ('list' or 'active').",
+                    "enum": ["list", "active"],
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "focus_window",
+        "description": "Bring an existing visible window to the foreground by name, title, or application.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Title, name, or application of the window to focus.",
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -553,11 +588,61 @@ def test_provider_resolves_project_actions_and_plan() -> None:
     )
     assert result.kind is IntentKind.ACTION_PLAN
     assert result.plan is not None
-    assert len(result.plan.actions) == 2
     assert result.plan.actions[0].tool_name == "open_project"
     assert result.plan.actions[0].arguments == {"project_name": "AiProject"}
     assert result.plan.actions[1].tool_name == "run_project_task"
     assert result.plan.actions[1].arguments == {"project_name": "AiProject", "task": "tests"}
+
+
+def test_provider_resolves_window_actions_and_plan() -> None:
+    list_response = SimpleNamespace(
+        output=[function_call("window_info", '{"action":"list"}')]
+    )
+    result = make_provider(FakeClient(list_response)).resolve("Τι παράθυρα είναι ανοιχτά;")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "window_info"
+    assert result.action.arguments == {"action": "list"}
+
+    active_response = SimpleNamespace(
+        output=[function_call("window_info", '{"action":"active"}')]
+    )
+    result = make_provider(FakeClient(active_response)).resolve("Σε ποιο παράθυρο είμαι;")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "window_info"
+    assert result.action.arguments == {"action": "active"}
+
+    focus_response = SimpleNamespace(
+        output=[function_call("focus_window", '{"query":"VS Code"}')]
+    )
+    result = make_provider(FakeClient(focus_response)).resolve("Πήγαινε στο VS Code.")
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "focus_window"
+    assert result.action.arguments == {"query": "VS Code"}
+
+    plan_response = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"focus_window","arguments":{"query":"VS Code"}}'
+                ']}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(plan_response)).resolve(
+        "Άνοιξε το Spotify και μετά γύρνα στο VS Code."
+    )
+    assert result.kind is IntentKind.ACTION_PLAN
+    assert result.plan is not None
+    assert len(result.plan.actions) == 2
+    assert result.plan.actions[0].tool_name == "open_app"
+    assert result.plan.actions[0].arguments == {"app_name": "Spotify"}
+    assert result.plan.actions[1].tool_name == "focus_window"
+    assert result.plan.actions[1].arguments == {"query": "VS Code"}
 
 
 

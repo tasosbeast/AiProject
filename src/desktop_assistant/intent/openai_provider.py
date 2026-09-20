@@ -125,6 +125,33 @@ Action: system_status with metric: disk
 User: 'Πώς πάει ο υπολογιστής μου;'
 Action: system_status with metric: overview
 
+User: 'Τι παράθυρα είναι ανοιχτά;' or 'List open windows.' or 'Ti parathyra einai anoichta;'
+Action: window_info with action: list
+
+User: 'Σε ποιο παράθυρο είμαι;' or "What's the active window?" or 'Se poio parathyro eimai;'
+Action: window_info with action: active
+
+User: 'Πήγαινε στο VS Code.' or 'Switch to VS Code.' or 'Pygaine sto VS Code.'
+Action: focus_window with query: VS Code
+
+User: 'Φέρε μπροστά το Spotify.' or 'Bring Spotify to foreground.' or 'Fere mprosta to Spotify.'
+Action: focus_window with query: Spotify
+
+User: 'Πήγαινε στο παράθυρο Bookish.' or 'Focus Bookish.'
+Action: focus_window with query: Bookish
+
+User: 'Switch to Chrome.' or 'Πήγαινε στο Chrome.'
+Action: focus_window with query: Chrome
+
+User: 'Άνοιξε το Spotify και μετά γύρνα στο VS Code.'
+Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
+
+User: 'Open Spotify and switch to VS Code.'
+Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
+
+User: 'Anoikse Spotify kai meta gyrna sto VS Code.'
+Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
+
 Never claim an action succeeded; local validation, safety policy, and confirmation remain authoritative. Requests may be English, Greek, Greeklish, or mixed. For a bare domain, use https://. Known-folder path values may start with Home, Desktop, Documents, Downloads, Music, Pictures, or Videos. Preserve explicit source and destination paths."""
 
 _CONTROL_SCHEMAS: tuple[dict[str, Any], ...] = (
