@@ -35,6 +35,13 @@ For system performance and hardware status, use system_status with metric: cpu, 
 For opening trusted projects in VS Code, use open_project with project_name: AiProject.
 For running predefined project tasks such as tests, use run_project_task with project_name: AiProject, task: tests.
 
+For keyboard input into an explicitly named existing window, use window_input.
+Use only its fixed action enum; never invent raw key codes or shortcut strings.
+Preserve the exact requested text (including whitespace); use type_text_and_enter for text followed by Enter.
+Text is limited to 2000 characters. Reject longer text rather than truncating it.
+For non-text actions value is absent (null in the strict API transport).
+Never substitute focus_window for a keyboard request. Never infer the target from 'here' or 'this window'.
+
 MULTI ACTION:
 If the user requests exactly 2 or 3 supported computer actions, you MUST call propose_action_plan exactly once and include EVERY requested action in exact requested order.
 Never fulfill only the first part of a multi-action request.
@@ -142,6 +149,27 @@ Action: focus_window with query: Bookish
 
 User: 'Switch to Chrome.' or 'Πήγαινε στο Chrome.'
 Action: focus_window with query: Chrome
+
+User: 'Γράψε hello world στο Notepad.'
+Action: window_input with query: Notepad, action: type_text, value: hello world
+
+User: 'Γράψε hello και πάτα Enter στο Notepad.'
+Action: window_input with query: Notepad, action: type_text_and_enter, value: hello
+
+User: 'Πάτα Ctrl+S στο VS Code.'
+Action: window_input with query: VS Code, action: ctrl_s
+
+User: 'Πάτα Enter στο Bookish.'
+Action: window_input with query: Bookish, action: enter
+
+User: 'Press Ctrl+L in Chrome.'
+Action: window_input with query: Chrome, action: ctrl_l
+
+User: 'Write hello in Notepad.' or 'Grapse hello sto Notepad.'
+Action: window_input with query: Notepad, action: type_text, value: hello
+
+User: 'Pata Ctrl+S sto VS Code.' or 'Πάτα Ctrl+S in VS Code.'
+Action: window_input with query: VS Code, action: ctrl_s
 
 User: 'Άνοιξε το Spotify και μετά γύρνα στο VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
@@ -265,8 +293,18 @@ class OpenAIIntentProvider:
             t for t in tool_schemas if t.get("name") != "propose_action_plan"
         ]
         self._registered_tools = {tool["name"]: tool for tool in base_tool_schemas if "name" in tool}
-        self._plan_schema = build_plan_tool_schema(base_tool_schemas)
-        self._tools = [*base_tool_schemas, self._plan_schema, *_CONTROL_SCHEMAS]
+        wire_schemas = deepcopy(base_tool_schemas)
+        for tool in wire_schemas:
+            parameters = tool.get("parameters", {})
+            required = parameters.get("required", [])
+            for name, prop in parameters.get("properties", {}).items():
+                if name not in required:
+                    prop["type"] = [prop["type"], "null"]
+                    if "enum" in prop:
+                        prop["enum"].append(None)
+            parameters["required"] = list(parameters.get("properties", {}))
+        self._plan_schema = build_plan_tool_schema(wire_schemas)
+        self._tools = [*wire_schemas, self._plan_schema, *_CONTROL_SCHEMAS]
         self._client = client or OpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
@@ -287,7 +325,7 @@ class OpenAIIntentProvider:
                 tools=self._tools,
                 tool_choice="required",
                 parallel_tool_calls=False,
-                max_output_tokens=256,
+                max_output_tokens=8192,
                 store=False,
             )
         except APITimeoutError as exc:
@@ -346,7 +384,7 @@ class OpenAIIntentProvider:
         if self._registered_tools and name not in self._registered_tools:
             raise MalformedIntentResponseError(f"Unknown tool call: {name}")
 
-        action = ToolAction(name, arguments)
+        action = ToolAction(name, self._local_arguments(name, arguments))
         logger.info(
             "Intent resolved",
             extra={
@@ -404,7 +442,7 @@ class OpenAIIntentProvider:
                                 f"Plan tool '{tool_name}' has unexpected argument '{k}'."
                             )
 
-            parsed_actions.append(ToolAction(tool_name, item_arguments))
+            parsed_actions.append(ToolAction(tool_name, self._local_arguments(tool_name, item_arguments)))
 
         logger.info(
             "Intent resolved",
@@ -417,6 +455,12 @@ class OpenAIIntentProvider:
             },
         )
         return IntentResult.action_plan(tuple(parsed_actions))
+
+    def _local_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        parameters = self._registered_tools.get(name, {}).get("parameters", {})
+        optional = set(parameters.get("properties", {})) - set(parameters.get("required", []))
+        # null represents omission only for explicitly optional fields in the wire schema.
+        return {key: value for key, value in arguments.items() if value is not None or key not in optional}
 
     @staticmethod
     def _parse_arguments(raw_arguments: object) -> dict[str, Any]:

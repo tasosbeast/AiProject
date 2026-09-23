@@ -170,6 +170,7 @@ class FakeProjectTaskRunner:
         )
 
 
+from desktop_assistant.window_input import WindowInputTool, InputAction
 from desktop_assistant.windows import (
     FocusWindowTool,
     WindowInfo,
@@ -193,6 +194,9 @@ class FakeWindowController:
 
     def visible_windows(self) -> tuple[WindowInfo, ...]:
         return tuple(self.windows)
+
+    def get_window_info(self, handle: int) -> WindowInfo | None:
+        return next((w for w in self.windows if w.handle == handle and handle in self.valid_handles), None)
 
     def get_foreground_window(self) -> WindowInfo | None:
         return self.active_window
@@ -222,6 +226,17 @@ class FakeWindowController:
         return False
 
 
+class FakeInputController:
+    def __init__(self) -> None:
+        self.calls: list[tuple[InputAction, str | None]] = []
+
+    def send(self, action, value, verify_target) -> None:
+        from desktop_assistant.window_input import InputError
+        if not verify_target():
+            raise InputError("Target verification failed. No input sent.")
+        self.calls.append((action, value))
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -234,6 +249,7 @@ def make_registry(
     vscode_launcher: FakeVSCodeLauncher | None = None,
     task_runner: FakeProjectTaskRunner | None = None,
     window_controller: FakeWindowController | None = None,
+    input_controller: FakeInputController | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -263,6 +279,7 @@ def make_registry(
             RunProjectTaskTool(project_catalog, task_runner),
             WindowInfoTool(window_controller),
             FocusWindowTool(window_controller, catalog),
+            WindowInputTool(window_controller, input_controller or FakeInputController(), catalog),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

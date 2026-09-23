@@ -36,6 +36,8 @@ class WindowInfo:
 class WindowController(Protocol):
     def visible_windows(self) -> tuple[WindowInfo, ...]: ...
 
+    def get_window_info(self, handle: int) -> WindowInfo | None: ...
+
     def get_foreground_window(self) -> WindowInfo | None: ...
 
     def is_window_valid(self, handle: int, expected_process_id: int) -> bool: ...
@@ -122,6 +124,8 @@ class WindowsAppProcessController:
 class _WindowApi(Protocol):
     def visible_windows(self, max_count: int = 30) -> tuple[WindowInfo, ...]: ...
 
+    def get_window_info(self, handle: int) -> WindowInfo | None: ...
+
     def get_foreground_window(self) -> WindowInfo | None: ...
 
     def is_window(self, handle: int) -> bool: ...
@@ -152,6 +156,9 @@ class WindowsWindowController:
             return self._api.get_foreground_window()
         except OSError as exc:
             raise ProcessControlError("Windows could not inspect active window.") from exc
+
+    def get_window_info(self, handle: int) -> WindowInfo | None:
+        return self._api.get_window_info(handle)
 
     def is_window_valid(self, handle: int, expected_process_id: int) -> bool:
         if not self._api.is_window(handle):
@@ -317,7 +324,6 @@ class _Win32ProcessApi:
             title = buf.value.strip()
             if not title:
                 return True
-            bounded_title = title[:120]
 
             process_id = wintypes.DWORD()
             self._user32.GetWindowThreadProcessId(window_handle, ctypes.byref(process_id))
@@ -329,7 +335,7 @@ class _Win32ProcessApi:
                 WindowInfo(
                     handle=int(window_handle),
                     process_id=pid,
-                    title=bounded_title,
+                    title=title,
                     executable_name=exe_name,
                     minimized=is_minimized,
                 )
@@ -346,9 +352,14 @@ class _Win32ProcessApi:
         return tuple(windows)
 
     def get_foreground_window(self) -> WindowInfo | None:
+        handle = self._user32.GetForegroundWindow()
+        info = self.get_window_info(handle) if handle else None
+        # Reading title/process information takes time; verify foreground again.
+        return info if self._user32.GetForegroundWindow() == handle else None
+
+    def get_window_info(self, handle: int) -> WindowInfo | None:
         from ctypes import wintypes
 
-        handle = self._user32.GetForegroundWindow()
         if not handle or not self._user32.IsWindow(handle):
             return None
 
@@ -360,7 +371,6 @@ class _Win32ProcessApi:
         title = buf.value.strip()
         if not title:
             return None
-        bounded_title = title[:120]
 
         process_id = wintypes.DWORD()
         self._user32.GetWindowThreadProcessId(handle, ctypes.byref(process_id))
@@ -375,7 +385,7 @@ class _Win32ProcessApi:
         return WindowInfo(
             handle=int(handle),
             process_id=pid,
-            title=bounded_title,
+            title=title,
             executable_name=exe_name,
             minimized=is_minimized,
         )

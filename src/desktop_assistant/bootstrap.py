@@ -41,6 +41,7 @@ from desktop_assistant.system_status import (
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
+from desktop_assistant.window_input import InputController, WindowInputTool, WindowsInputController
 from desktop_assistant.windows import (
     FocusWindowTool,
     WindowController,
@@ -70,6 +71,7 @@ def build_assistant(
     vscode_launcher: VSCodeLauncher | None = None,
     task_runner: ProjectTaskRunner | None = None,
     window_controller: WindowController | None = None,
+    input_controller: InputController | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -83,6 +85,7 @@ def build_assistant(
     vscode_launcher = vscode_launcher or WindowsVSCodeLauncher()
     task_runner = task_runner or SubprocessProjectTaskRunner()
     window_controller = window_controller or WindowsWindowController()
+    input_controller = input_controller or WindowsInputController()
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -103,6 +106,7 @@ def build_assistant(
             RunProjectTaskTool(project_catalog, task_runner),
             WindowInfoTool(window_controller),
             FocusWindowTool(window_controller, catalog),
+            WindowInputTool(window_controller, input_controller, catalog),
         ),
         known_folders=known_folders,
     )

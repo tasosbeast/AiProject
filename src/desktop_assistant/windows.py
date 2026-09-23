@@ -131,11 +131,11 @@ class WindowInfoTool:
                     {"windows": []},
                 )
 
-            lines = [f"- {w.title} — {w.executable_name}" for w in windows]
+            lines = [f"- {w.title[:120]} — {w.executable_name}" for w in windows]
             message = "Visible windows:\n" + "\n".join(lines)
             details = {
                 "windows": [
-                    {"title": w.title, "executable": w.executable_name}
+                    {"title": w.title[:120], "executable": w.executable_name}
                     for w in windows
                 ]
             }
@@ -151,8 +151,8 @@ class WindowInfoTool:
             if active is None or not active.title:
                 return ToolResult(True, "No active window detected.", self.risk_level, {})
 
-            message = f"Active window: {active.title} — {active.executable_name}"
-            details = {"title": active.title, "executable": active.executable_name}
+            message = f"Active window: {active.title[:120]} — {active.executable_name}"
+            details = {"title": active.title[:120], "executable": active.executable_name}
             return ToolResult(True, message, self.risk_level, details)
 
         return ToolResult(False, f"Unsupported action: {prepared_value}", self.risk_level)

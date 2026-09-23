@@ -542,6 +542,22 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             RiskLevel.SAFE,
             lambda arguments: f"Window info: {arguments.get('action', '')}",
         )
+    if tool.name == "window_input":
+        from desktop_assistant.window_input import WindowInputTool
+
+        return ToolDefinition(
+            tool.name,
+            "Send confirmed text or one fixed keyboard action to an existing verified window.",
+            (
+                string_argument("query", "Existing window title or application name."),
+                string_argument("action", "Exact input action.", enum_values=WindowInputTool.allowed_actions),
+                ToolArgumentDefinition("value", "Exact text (1–2000 characters), only for text actions.", required=False),
+            ),
+            tool,
+            RiskLevel.SENSITIVE,
+            WindowInputTool.confirmation_summary,
+            "Keyboard input can change data or submit content in the target window. Review before allowing.",
+        )
     if tool.name == "focus_window":
         return ToolDefinition(
             tool.name,

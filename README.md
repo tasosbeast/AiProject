@@ -371,6 +371,45 @@ or physical hotkey acceptance tests; those remain local Windows checks.
 
 ## Architecture
 
+### Focused keyboard input v1
+
+`window_input` takes an existing window `query`, a fixed `action`, and an optional
+`value` only for text actions. Every invocation is SENSITIVE and requires confirmation.
+Examples: `Γράψε hello world στο Notepad.`, `Grapse hello sto Notepad.`,
+`Πάτα Ctrl+S στο VS Code.`, and `Press Ctrl+L in Chrome.` These requests use provider
+routing; no general keyboard-language parser is installed.
+
+Supported actions are `type_text`, `type_text_and_enter`, `enter`, `escape`, `tab`,
+`backspace`, `delete`, `arrow_up`, `arrow_down`, `arrow_left`, `arrow_right`, `home`,
+`end`, `page_up`, `page_down`, `ctrl_a`, `ctrl_c`, `ctrl_v`, `ctrl_s`, `ctrl_f`,
+`ctrl_l`, `ctrl_z`, and `ctrl_y`. Text must contain 1–2000 Unicode characters;
+whitespace is preserved. Other actions reject `value` entirely. The strict API
+transport represents omission as `null` and removes that sentinel before local
+validation, following the [OpenAI function-calling contract](https://developers.openai.com/api/docs/guides/function-calling#strict-mode).
+
+Preparation takes a fresh visible-window snapshot and uses `match_window_for_focus()`
+with its existing ambiguity rules. A frozen `PreparedWindowInput` captures the exact
+handle, PID, full title, executable, action, and text. Confirmation shows the target,
+action, and a bounded escaped text preview, without internal identifiers. Confirm
+executes that payload without another provider call or window search; Cancel sends
+no input. Full text is excluded from logging and result details.
+
+`WindowsInputController` uses only ctypes and Win32 `SendInput`: UTF-16 Unicode
+down/up events for text, and private fixed virtual-key mappings for keys/shortcuts.
+Execution revalidates the exact handle, PID, full title and executable, restores a
+minimized target, and requires `SetForegroundWindow` to succeed. It verifies the
+foreground handle and identity again immediately before the bounded event batch.
+Partial delivery fails without replaying input and attempts to release any keys
+left down; failed cleanup is reported. Tests inject the sender and never type into
+the real desktop.
+
+Windows does not provide an atomic focus-check-and-input operation: focus can still
+change after validation, and an already-held physical modifier can affect input.
+`SendInput` acceptance reports inserted events, not application-level completion;
+some elevated applications refuse input. See [Microsoft's SendInput documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput).
+There are no arbitrary shortcut strings/codes, Win-key or Alt+F4 actions, mouse
+operations, clipboard APIs, keyboard hooks, shell, or subprocess additions.
+
 ```text
 src/desktop_assistant/
   assistant.py    Application-facing orchestrator
@@ -379,6 +418,7 @@ src/desktop_assistant/
   filesystem_tools.py Safe queries and confirmed filesystem mutations
   app_tools.py   Allowlisted status and confirmed graceful-close tools
   process_control.py Narrow Toolhelp/EnumWindows/WM_CLOSE boundary
+  window_input.py Confirmed target-bound Unicode and fixed-key SendInput boundary
   bootstrap.py    Shared production composition for CLI and GUI
   router.py       Deterministic command parsing and dispatch
   tool_registry.py Authoritative schemas, validation, safety, and execution
