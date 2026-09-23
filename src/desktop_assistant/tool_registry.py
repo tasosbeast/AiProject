@@ -558,6 +558,17 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             WindowInputTool.confirmation_summary,
             "Keyboard input can change data or submit content in the target window. Review before allowing.",
         )
+    if tool.name == "ui_inspect":
+        from desktop_assistant.windows import bounded_window_label
+
+        return ToolDefinition(
+            tool.name,
+            "Read metadata for supported UI controls inside one existing window without changing focus.",
+            (string_argument("query", "Explicit existing window title or application name."),),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Inspect controls in: {bounded_window_label(arguments['query'])}",
+        )
     if tool.name == "focus_window":
         return ToolDefinition(
             tool.name,

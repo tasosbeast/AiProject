@@ -18,11 +18,11 @@ class EditableControlResolver(Protocol):
     def focus(self, handle: int, process_id: int) -> AbstractContextManager[FocusedEditableControl]: ...
 
 
-class _AutomationBackend(Protocol):
+class AutomationBackend(Protocol):
     def open(self) -> AbstractContextManager[tuple[object, object]]: ...
 
 
-class _WindowsAutomationBackend:
+class WindowsAutomationBackend:
     @contextmanager
     def open(self) -> Iterator[tuple[object, object]]:
         if os.name != "nt":
@@ -104,9 +104,9 @@ class _FocusedControl:
 class WindowsEditableControlResolver:
     """Find and focus one editable Document/Edit in an exact top-level HWND."""
 
-    def __init__(self, backend: _AutomationBackend | None = None,
+    def __init__(self, backend: AutomationBackend | None = None,
                  focus_timeout_seconds: float = 0.3) -> None:
-        self._backend = backend or _WindowsAutomationBackend()
+        self._backend = backend or WindowsAutomationBackend()
         self._focus_timeout_seconds = focus_timeout_seconds
 
     @contextmanager

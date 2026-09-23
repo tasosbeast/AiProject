@@ -15,6 +15,12 @@ from desktop_assistant.process_control import (
 logger = logging.getLogger(__name__)
 
 
+def bounded_window_label(value: object, limit: int = 120) -> str:
+    """Bound display text without changing the full identity stored internally."""
+    clean = " ".join("".join(c if c.isprintable() else " " for c in str(value or "")).split())
+    return clean[:limit]
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedWindowFocus:
     handle: int
@@ -55,9 +61,9 @@ def match_window_for_focus(
                 return trusted_matches[0]
 
         candidates = ", ".join(
-            f"'{w.title}' ({w.executable_name})" for w in exact_title_matches[:3]
+            f"'{bounded_window_label(w.title)}' ({bounded_window_label(w.executable_name, 80)})" for w in exact_title_matches[:3]
         )
-        return f"Multiple windows match '{query}': {candidates}. Please specify the exact title."
+        return f"Multiple windows match '{bounded_window_label(query)}': {candidates}. Please specify the exact title."
 
     # 2. AppCatalog aliases such as "VS Code", "Chrome", "Spotify", "Notepad"
     # and match their trusted process_names
@@ -76,8 +82,8 @@ def match_window_for_focus(
     if len(sub_matches) == 1:
         return sub_matches[0]
     elif len(sub_matches) > 1:
-        candidates = ", ".join(f"'{w.title}'" for w in sub_matches[:3])
-        return f"Multiple windows match '{query}': {candidates}. Please specify the exact title."
+        candidates = ", ".join(f"'{bounded_window_label(w.title)}'" for w in sub_matches[:3])
+        return f"Multiple windows match '{bounded_window_label(query)}': {candidates}. Please specify the exact title."
 
     # 4. Optionally exact executable stem matching (e.g. query "spotify" matches "spotify.exe")
     stem_matches = [
@@ -87,10 +93,10 @@ def match_window_for_focus(
     if len(stem_matches) == 1:
         return stem_matches[0]
     elif len(stem_matches) > 1:
-        candidates = ", ".join(f"'{w.title}'" for w in stem_matches[:3])
-        return f"Multiple windows match '{query}': {candidates}. Please specify the exact title."
+        candidates = ", ".join(f"'{bounded_window_label(w.title)}'" for w in stem_matches[:3])
+        return f"Multiple windows match '{bounded_window_label(query)}': {candidates}. Please specify the exact title."
 
-    return f"No matching window found for '{query}'."
+    return f"No matching window found for '{bounded_window_label(query)}'."
 
 
 class WindowInfoTool:
@@ -131,11 +137,11 @@ class WindowInfoTool:
                     {"windows": []},
                 )
 
-            lines = [f"- {w.title[:120]} — {w.executable_name}" for w in windows]
+            lines = [f"- {bounded_window_label(w.title)} — {bounded_window_label(w.executable_name, 80)}" for w in windows]
             message = "Visible windows:\n" + "\n".join(lines)
             details = {
                 "windows": [
-                    {"title": w.title[:120], "executable": w.executable_name}
+                    {"title": bounded_window_label(w.title), "executable": bounded_window_label(w.executable_name, 80)}
                     for w in windows
                 ]
             }
@@ -151,8 +157,8 @@ class WindowInfoTool:
             if active is None or not active.title:
                 return ToolResult(True, "No active window detected.", self.risk_level, {})
 
-            message = f"Active window: {active.title[:120]} — {active.executable_name}"
-            details = {"title": active.title[:120], "executable": active.executable_name}
+            message = f"Active window: {bounded_window_label(active.title)} — {bounded_window_label(active.executable_name, 80)}"
+            details = {"title": bounded_window_label(active.title), "executable": bounded_window_label(active.executable_name, 80)}
             return ToolResult(True, message, self.risk_level, details)
 
         return ToolResult(False, f"Unsupported action: {prepared_value}", self.risk_level)
@@ -202,14 +208,14 @@ class FocusWindowTool:
             logger.exception("Failed to validate window %s.", prepared_value.title)
             return ToolResult(
                 False,
-                f"Window '{prepared_value.title}' is no longer available.",
+                f"Window '{bounded_window_label(prepared_value.title)}' is no longer available.",
                 self.risk_level,
             )
 
         if not is_valid:
             return ToolResult(
                 False,
-                f"Window '{prepared_value.title}' is no longer available.",
+                f"Window '{bounded_window_label(prepared_value.title)}' is no longer available.",
                 self.risk_level,
             )
 
@@ -222,20 +228,20 @@ class FocusWindowTool:
             logger.exception("Failed to bring window %s to foreground.", prepared_value.title)
             return ToolResult(
                 False,
-                f"Windows could not bring '{prepared_value.title}' to the foreground.",
+                f"Windows could not bring '{bounded_window_label(prepared_value.title)}' to the foreground.",
                 self.risk_level,
             )
 
         if not focused:
             return ToolResult(
                 False,
-                f"Windows could not bring '{prepared_value.title}' to the foreground.",
+                f"Windows could not bring '{bounded_window_label(prepared_value.title)}' to the foreground.",
                 self.risk_level,
             )
 
         return ToolResult(
             True,
-            f"Switched to {prepared_value.title}.",
+            f"Switched to {bounded_window_label(prepared_value.title)}.",
             self.risk_level,
-            {"title": prepared_value.title, "executable": prepared_value.executable_name},
+            {"title": bounded_window_label(prepared_value.title), "executable": bounded_window_label(prepared_value.executable_name, 80)},
         )

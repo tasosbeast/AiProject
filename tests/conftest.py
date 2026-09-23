@@ -172,6 +172,7 @@ class FakeProjectTaskRunner:
 
 
 from desktop_assistant.window_input import WindowInputTool, InputAction
+from desktop_assistant.ui_perception import UIInspectTool, UIInspection
 from desktop_assistant.windows import (
     FocusWindowTool,
     WindowInfo,
@@ -260,6 +261,16 @@ class FakeEditableControlResolver:
         return self.focused
 
 
+class FakeUIInspector:
+    def __init__(self, inspection: UIInspection | None = None) -> None:
+        self.calls: list[tuple[int, int]] = []
+        self.inspection = inspection or UIInspection((), False)
+
+    def inspect(self, handle: int, process_id: int) -> UIInspection:
+        self.calls.append((handle, process_id))
+        return self.inspection
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -274,6 +285,7 @@ def make_registry(
     window_controller: FakeWindowController | None = None,
     input_controller: FakeInputController | None = None,
     editable_control_resolver: FakeEditableControlResolver | None = None,
+    ui_inspector: FakeUIInspector | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -305,6 +317,7 @@ def make_registry(
             FocusWindowTool(window_controller, catalog),
             WindowInputTool(window_controller, input_controller or FakeInputController(), catalog,
                             editable_control_resolver or FakeEditableControlResolver()),
+            UIInspectTool(window_controller, catalog, ui_inspector or FakeUIInspector()),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

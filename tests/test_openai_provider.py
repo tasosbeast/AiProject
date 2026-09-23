@@ -212,6 +212,18 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "ui_inspect",
+        "description": "Inspect supported controls in one existing window.",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Explicit window."}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -225,6 +237,23 @@ def make_provider(
         tool_schemas=TEST_TOOL_SCHEMAS if tool_schemas is None else tool_schemas,
         client=client,
     )
+
+
+@pytest.mark.parametrize(("utterance", "query"), [
+    ("Τι controls έχει το Notepad;", "Notepad"),
+    ("Τι κουμπιά έχει το Chrome;", "Chrome"),
+    ("Δείξε μου τι υπάρχει στο παράθυρο Bookish.", "Bookish"),
+    ("Show me the controls in VS Code.", "VS Code"),
+    ("Ti koumpia exei to Notepad?", "Notepad"),
+])
+def test_provider_accepts_ui_inspect_routing_for_explicit_targets(utterance, query):
+    client = FakeClient(SimpleNamespace(output=[function_call(
+        "ui_inspect", f'{{"query":"{query}"}}',
+    )]))
+    result = make_provider(client).resolve(utterance)
+    assert result.action.tool_name == "ui_inspect"
+    assert result.action.arguments == {"query": query}
+    assert client.responses.calls[0]["input"] == utterance
 
 
 def test_provider_uses_stateless_responses_api_with_single_call_settings() -> None:

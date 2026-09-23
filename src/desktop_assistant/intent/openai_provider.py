@@ -171,6 +171,23 @@ Action: window_input with query: Notepad, action: type_text, value: hello
 User: 'Pata Ctrl+S sto VS Code.' or 'Πάτα Ctrl+S in VS Code.'
 Action: window_input with query: VS Code, action: ctrl_s
 
+User: 'Τι controls έχει το Notepad;'
+Action: ui_inspect with query: Notepad
+
+User: 'Τι κουμπιά έχει το Chrome;'
+Action: ui_inspect with query: Chrome
+
+User: 'Δείξε μου τι υπάρχει στο παράθυρο Bookish.'
+Action: ui_inspect with query: Bookish
+
+User: 'Show me the controls in VS Code.'
+Action: ui_inspect with query: VS Code
+
+User: 'Ti koumpia exei to Notepad?'
+Action: ui_inspect with query: Notepad
+
+For ui_inspect, require an explicit target window or application name. Do not infer 'this window' or 'here'.
+
 User: 'Άνοιξε το Spotify και μετά γύρνα στο VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
 

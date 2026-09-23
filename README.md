@@ -371,6 +371,20 @@ or physical hotkey acceptance tests; those remain local Windows checks.
 
 ## Architecture
 
+### Read-only UI perception v1
+
+`ui_inspect` is a SAFE metadata query for one explicitly named existing window.
+It prepares the exact top-level handle, PID, full title, and executable used by
+window focus, then revalidates that identity before and after inspection. It
+does not bring the window forward. A shared `comtypes` backend obtains the UI
+Automation root from that handle, verifies its handle and PID, and enumerates
+only supported descendants beneath it. The result includes up to 40 controls
+in UIA order: control type, bounded accessible name and automation ID, enabled,
+focusable, focused, and offscreen flags, plus descriptive pattern capabilities.
+Decorative controls are omitted and truncation is marked. Password controls use
+a generic label. Values, document text, selected text, child handles, runtime
+IDs, and coordinates are never read or returned. This tool has no UI action APIs.
+
 ### Focused keyboard input v1.1
 
 `window_input` takes an existing window `query`, a fixed `action`, and an optional
@@ -429,6 +443,7 @@ src/desktop_assistant/
   process_control.py Narrow Toolhelp/EnumWindows/WM_CLOSE boundary
   window_input.py Confirmed target-bound Unicode and fixed-key SendInput boundary
   editable_controls.py Scoped Windows UI Automation editor focus for text actions
+  ui_perception.py Read-only scoped UI Automation metadata inspection
   bootstrap.py    Shared production composition for CLI and GUI
   router.py       Deterministic command parsing and dispatch
   tool_registry.py Authoritative schemas, validation, safety, and execution

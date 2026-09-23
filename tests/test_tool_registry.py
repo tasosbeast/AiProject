@@ -28,6 +28,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "window_info",
         "focus_window",
         "window_input",
+        "ui_inspect",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)

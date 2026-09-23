@@ -14,7 +14,7 @@ from desktop_assistant.editable_controls import (
 )
 from desktop_assistant.models import RiskLevel, ToolArguments, ToolPreparation, ToolResult
 from desktop_assistant.process_control import WindowController, WindowInfo
-from desktop_assistant.windows import match_window_for_focus
+from desktop_assistant.windows import bounded_window_label, match_window_for_focus
 
 
 logger = logging.getLogger(__name__)
@@ -251,7 +251,7 @@ class WindowInputTool:
         prepared = PreparedWindowInput(match.handle, match.process_id, match.title,
                                        match.executable_name, action, value)
         # Display-only normalized arguments; execution always uses the frozen payload.
-        normalized = [("query", f"{match.title} — {match.executable_name}"), ("action", action.value)]
+        normalized = [("query", f"{bounded_window_label(match.title)} — {bounded_window_label(match.executable_name, 80)}"), ("action", action.value)]
         if value is not None:
             preview = repr(value[:TEXT_PREVIEW_LENGTH])
             if len(value) > TEXT_PREVIEW_LENGTH:
@@ -278,6 +278,7 @@ class WindowInputTool:
         if not isinstance(prepared_value, PreparedWindowInput):
             return self._failure("The prepared input action is invalid.")
         target = prepared_value
+        display_title = bounded_window_label(target.title)
         try:
             _validate_input(target.action, target.value)
             if not self._windows.is_window_valid(target.handle, target.process_id):
@@ -310,9 +311,9 @@ class WindowInputTool:
                 self._inputs.send(target.action, target.value, verify_target)
         except EditableControlError as exc:
             if str(exc) == "No editable text control could be identified":
-                return self._failure(f"No editable text control could be identified in {target.title}.")
+                return self._failure(f"No editable text control could be identified in {display_title}.")
             if str(exc) == "Multiple equally suitable editable text controls were found":
-                return self._failure(f"Multiple equally suitable editable text controls were found in {target.title}.")
+                return self._failure(f"Multiple equally suitable editable text controls were found in {display_title}.")
             return self._failure(str(exc))
         except InputError as exc:
             return self._failure(str(exc))
@@ -321,13 +322,13 @@ class WindowInputTool:
             logger.warning("Window input failed for target %s", target.title)
             return self._failure("Window input could not be completed safely.")
         count = len(target.value) if target.value is not None else 0
-        details = {"title": target.title, "action": target.action.value, "character_count": count}
+        details = {"title": display_title, "action": target.action.value, "character_count": count}
         if target.action in _TEXT_ACTIONS:
-            message = f"Typed {count} characters into {target.title}."
+            message = f"Typed {count} characters into {display_title}."
             if target.action is InputAction.TYPE_TEXT_AND_ENTER:
                 message += " Pressed Enter."
         else:
             label = ("Ctrl+" + target.action.value[-1].upper() if target.action.value.startswith("ctrl_")
                      else target.action.value.replace("_", " ").title())
-            message = f"Pressed {label} in {target.title}."
+            message = f"Pressed {label} in {display_title}."
         return ToolResult(True, message, self.risk_level, details)
