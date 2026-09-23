@@ -104,17 +104,23 @@ class WindowsUIInspector:
                 controls: list[UIElementInfo] = []
                 truncated = False
                 for index in range(found.Length):
-                    element = found.GetElement(index)
-                    if (element.CurrentProcessId != process_id
-                            or not self._within_root(automation, types, root, element)):
-                        continue
-                    friendly = type_names.get(element.CurrentControlType)
-                    if friendly is None:
+                    try:
+                        element = found.GetElement(index)
+                        if (element.CurrentProcessId != process_id
+                                or not self._within_root(automation, types, root, element)):
+                            continue
+                        friendly = type_names.get(element.CurrentControlType)
+                        if friendly is None:
+                            continue
+                        info = self._read_info(element, types, friendly)
+                    except Exception:
+                        # A stale/provider-specific descendant must not invalidate
+                        # the prepared root or leak a partially read control.
                         continue
                     if len(controls) == MAX_CONTROLS:
                         truncated = True
                         break
-                    controls.append(self._read_info(element, types, friendly))
+                    controls.append(info)
                 if (root.CurrentNativeWindowHandle != handle
                         or root.CurrentProcessId != process_id):
                     raise UIInspectionError("The prepared window identity changed.")
@@ -140,9 +146,12 @@ class WindowsUIInspector:
 
     @staticmethod
     def _available(element: object, types: object, pattern: str) -> bool:
-        return bool(element.GetCurrentPropertyValue(
-            getattr(types, f"UIA_Is{pattern}PatternAvailablePropertyId"),
-        ))
+        try:
+            return bool(element.GetCurrentPropertyValue(
+                getattr(types, f"UIA_Is{pattern}PatternAvailablePropertyId"),
+            ))
+        except Exception:
+            return False
 
     @classmethod
     def _read_info(cls, element: object, types: object, friendly: str) -> UIElementInfo:
@@ -156,8 +165,12 @@ class WindowsUIInspector:
         if not password and friendly in {"edit", "document"}:
             value = cls._available(element, types, "Value")
             text_edit = cls._available(element, types, "TextEdit")
-            if text_edit or (value and element.GetCurrentPropertyValue(
-                    types.UIA_ValueIsReadOnlyPropertyId) is False):
+            try:
+                writable_value = value and element.GetCurrentPropertyValue(
+                    types.UIA_ValueIsReadOnlyPropertyId) is False
+            except Exception:
+                writable_value = False
+            if text_edit or writable_value:
                 capabilities.append("edit")
         return UIElementInfo(
             friendly, name, automation_id,

@@ -90,6 +90,23 @@ class Element:
         raise AttributeError(name)
 
 
+class FaultyElement(Element):
+    def __init__(self, *args, fail_on=None, fail_property=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_on = fail_on
+        self.fail_property = fail_property
+
+    def __getattribute__(self, name):
+        if name == object.__getattribute__(self, "fail_on"):
+            raise OSError("private provider error")
+        return super().__getattribute__(name)
+
+    def GetCurrentPropertyValue(self, prop):
+        if prop == self.fail_property:
+            raise OSError("private provider error")
+        return super().GetCurrentPropertyValue(prop)
+
+
 class Automation:
     def __init__(self, root):
         self.root = root
@@ -186,6 +203,101 @@ def test_uia_root_identity_mismatch_rejected(field, value):
     with pytest.raises(UIInspectionError):
         inspector.inspect(71, 17)
     assert automation.handles == [71] and root.searches == []
+
+
+def test_root_element_from_handle_error_is_hard_failure():
+    _, automation, inspector = backend(Element(T.UIA_ButtonControlTypeId))
+    def fail_root(_handle):
+        raise OSError("private provider error")
+    automation.ElementFromHandle = fail_root
+    with pytest.raises(UIInspectionError, match="could not be inspected safely") as error:
+        inspector.inspect(71, 17)
+    assert "private provider error" not in str(error.value)
+
+
+@pytest.mark.parametrize("property_name", [
+    "CurrentProcessId", "CurrentControlType", "CurrentIsPassword", "CurrentName",
+    "CurrentAutomationId", "CurrentIsEnabled", "CurrentIsKeyboardFocusable",
+    "CurrentHasKeyboardFocus", "CurrentIsOffscreen",
+])
+def test_one_bad_child_property_is_skipped_but_valid_button_is_returned(property_name):
+    bad = FaultyElement(T.UIA_ButtonControlTypeId, name="unsafe", fail_on=property_name)
+    good = Element(T.UIA_ButtonControlTypeId, name="Save")
+    _, _, inspector = backend(bad, good)
+    inspection = inspector.inspect(71, 17)
+    assert [(control.control_type, control.name) for control in inspection.controls] == [
+        ("button", "Save")]
+    assert not inspection.truncated
+
+
+def test_stale_child_during_ancestry_is_skipped():
+    stale = FaultyElement(T.UIA_ButtonControlTypeId, name="stale")
+    good = Element(T.UIA_ButtonControlTypeId, name="Settings")
+    _, _, inspector = backend(stale, good)
+    stale.fail_on = "parent"
+    assert [control.name for control in inspector.inspect(71, 17).controls] == ["Settings"]
+
+
+def test_capability_property_error_omits_only_that_capability():
+    button = FaultyElement(
+        T.UIA_ButtonControlTypeId, name="Save",
+        patterns=(T.UIA_IsInvokePatternAvailablePropertyId,
+                  T.UIA_IsTogglePatternAvailablePropertyId),
+        fail_property=T.UIA_IsInvokePatternAvailablePropertyId,
+    )
+    _, _, inspector = backend(button)
+    inspection = inspector.inspect(71, 17)
+    assert len(inspection.controls) == 1
+    assert inspection.controls[0].capabilities == ("toggle",)
+
+
+def test_edit_readonly_property_error_omits_edit_but_keeps_control():
+    edit = FaultyElement(
+        T.UIA_EditControlTypeId, name="Editor",
+        patterns=(T.UIA_IsValuePatternAvailablePropertyId,),
+        fail_property=T.UIA_ValueIsReadOnlyPropertyId,
+    )
+    _, _, inspector = backend(edit)
+    inspection = inspector.inspect(71, 17)
+    assert len(inspection.controls) == 1
+    assert inspection.controls[0].name == "Editor"
+    assert "edit" not in inspection.controls[0].capabilities
+
+
+def test_multiple_bad_children_do_not_abort_or_expose_partial_metadata():
+    bad_name = FaultyElement(T.UIA_ButtonControlTypeId, name="private name", fail_on="CurrentName")
+    bad_id = FaultyElement(T.UIA_EditControlTypeId, name="partial", fail_on="CurrentAutomationId")
+    good = Element(T.UIA_ButtonControlTypeId, name="OK")
+    _, _, inspector = backend(bad_name, bad_id, good)
+    inspection = inspector.inspect(71, 17)
+    assert [control.name for control in inspection.controls] == ["OK"]
+    assert "partial" not in str(inspection)
+
+
+def test_all_bad_children_with_valid_root_return_successful_empty_result():
+    bad = [FaultyElement(T.UIA_ButtonControlTypeId, fail_on="CurrentName") for _ in range(3)]
+    _, _, inspector = backend(*bad)
+    inspection = inspector.inspect(71, 17)
+    assert inspection == UIInspection((), False)
+    _, _, registry = tool_harness(inspection=inspection)
+    result = registry.execute("ui_inspect", {"query": "Notepad"})
+    assert result.success
+    assert result.message.startswith("No supported interactive controls")
+
+
+def test_top_level_identity_change_after_inspection_is_still_failure():
+    controller = FakeWindowController((TARGET,))
+    class ChangingInspector:
+        def inspect(self, handle, process_id):
+            controller.windows = [replace(TARGET, title="Changed")]
+            return UIInspection((UIElementInfo(
+                "button", "Save", "", True, True, False, False, (),
+            ),), False)
+    registry = make_registry(FakeLauncher(), window_controller=controller,
+                             ui_inspector=ChangingInspector())
+    result = registry.execute("ui_inspect", {"query": "Notepad"})
+    assert not result.success and "changed or is no longer available" in result.message
+    assert "Save" not in result.message
 
 
 def test_only_supported_descendants_inside_prepared_root_in_deterministic_order():
