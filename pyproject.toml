@@ -13,6 +13,7 @@ authors = [{ name = "Project Owner" }]
 dependencies = [
   "openai>=2.26,<3.0",
   "python-dotenv>=1.1,<2.0",
+  "comtypes>=1.4,<2.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

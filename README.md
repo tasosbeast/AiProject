@@ -44,7 +44,7 @@ It never turns user input into a PowerShell, Command Prompt, or shell command.
 ## What it does not do yet
 
 - Realtime, always-listening, or wake-word voice interaction
-- Browser or mouse/keyboard automation
+- General browser or mouse automation
 - Persistent memory
 - Broad knowledge questions, web search, or general-purpose chat
 - Multiple computer actions from a single request
@@ -371,7 +371,7 @@ or physical hotkey acceptance tests; those remain local Windows checks.
 
 ## Architecture
 
-### Focused keyboard input v1
+### Focused keyboard input v1.1
 
 `window_input` takes an existing window `query`, a fixed `action`, and an optional
 `value` only for text actions. Every invocation is SENSITIVE and requires confirmation.
@@ -399,6 +399,15 @@ down/up events for text, and private fixed virtual-key mappings for keys/shortcu
 Execution revalidates the exact handle, PID, full title and executable, restores a
 minimized target, and requires `SetForegroundWindow` to succeed. It verifies the
 foreground handle and identity again immediately before the bounded event batch.
+For text actions, a scoped Windows UI Automation resolver searches only descendants
+of that top-level HWND. It selects one enabled, keyboard-focusable, editable
+Document or Edit control in the same process, preferring Document when clearly
+available. A writable Value pattern or editable Text/TextEdit pattern is required.
+It calls `SetFocus` on the selected control, then checks the focused UIA element's
+ancestry, PID and keyboard focus together with the original top-level foreground
+identity before `SendInput`. Missing or ambiguous controls fail without input.
+Other keyboard actions keep their top-level focus behavior. The packaged build
+includes the `comtypes` UI Automation typelib wrappers.
 Partial delivery fails without replaying input and attempts to release any keys
 left down; failed cleanup is reported. Tests inject the sender and never type into
 the real desktop.
@@ -419,6 +428,7 @@ src/desktop_assistant/
   app_tools.py   Allowlisted status and confirmed graceful-close tools
   process_control.py Narrow Toolhelp/EnumWindows/WM_CLOSE boundary
   window_input.py Confirmed target-bound Unicode and fixed-key SendInput boundary
+  editable_controls.py Scoped Windows UI Automation editor focus for text actions
   bootstrap.py    Shared production composition for CLI and GUI
   router.py       Deterministic command parsing and dispatch
   tool_registry.py Authoritative schemas, validation, safety, and execution

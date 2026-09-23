@@ -18,6 +18,8 @@ def test_packaging_spec_is_windowed_onedir_and_has_dynamic_imports() -> None:
     assert "PySide6.QtNetwork" in source
     assert "msvc_runtime_binaries" in source
     assert "ambient_dlls" in source
+    assert 'comtypes.client.GetModule("UIAutomationCore.dll")' in source
+    assert 'collect_submodules("comtypes.gen")' in source
     assert "C:\\Users" not in source
 
 
@@ -36,6 +38,7 @@ def test_packaging_dependencies_and_outputs_are_declared_safely() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
 
     assert 'pyinstaller>=6.22,<7.0' in project
+    assert 'comtypes>=1.4,<2.0' in project
     assert "build/" in ignored
     assert "dist/" in ignored
     assert ".env.local" in ignored

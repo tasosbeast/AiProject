@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import FakeInputController, FakeLauncher, FakeWindowController, make_registry
+from conftest import (FakeEditableControlResolver, FakeInputController, FakeLauncher,
+                     FakeWindowController, make_registry)
 from desktop_assistant.assistant import Assistant
 from desktop_assistant.config import AppCatalog
 from desktop_assistant.confirmation import PreparedAction
@@ -81,7 +82,8 @@ def setup(target=TARGET):
     windows = Windows(target)
     sender = Sender()
     inputs = WindowsInputController(sender)
-    registry = make_registry(FakeLauncher(), window_controller=windows, input_controller=inputs)
+    registry = make_registry(FakeLauncher(), window_controller=windows, input_controller=inputs,
+                             editable_control_resolver=FakeEditableControlResolver())
     return windows, sender, registry
 
 
@@ -474,6 +476,7 @@ def test_production_bootstrap_registers_injected_keyboard_tool():
         process_controller=FakeProcessController(), media_controller=FakeMediaController(),
         system_status_collector=FakeSystemStatusCollector(), window_controller=windows,
         input_controller=inputs,
+        editable_control_resolver=FakeEditableControlResolver(),
     )
     response = assistant.handle("Πάτα Ctrl+S στο Notepad.")
     assert response.confirmation is not None

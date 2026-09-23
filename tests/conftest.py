@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import contextmanager
 
 from desktop_assistant.app_tools import AppStatusTool, CloseAppTool
 from desktop_assistant.config import AppCatalog, AppDefinition
@@ -237,6 +238,28 @@ class FakeInputController:
         self.calls.append((action, value))
 
 
+class FakeEditableControlResolver:
+    def __init__(self) -> None:
+        self.focus_calls: list[tuple[int, int]] = []
+        self.focus_checks = 0
+        self.focused = True
+        self.error: Exception | None = None
+        self.on_focus = None
+
+    @contextmanager
+    def focus(self, handle: int, process_id: int):
+        self.focus_calls.append((handle, process_id))
+        if self.error is not None:
+            raise self.error
+        if self.on_focus is not None:
+            self.on_focus()
+        yield self
+
+    def is_focused(self) -> bool:
+        self.focus_checks += 1
+        return self.focused
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -250,6 +273,7 @@ def make_registry(
     task_runner: FakeProjectTaskRunner | None = None,
     window_controller: FakeWindowController | None = None,
     input_controller: FakeInputController | None = None,
+    editable_control_resolver: FakeEditableControlResolver | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -279,7 +303,8 @@ def make_registry(
             RunProjectTaskTool(project_catalog, task_runner),
             WindowInfoTool(window_controller),
             FocusWindowTool(window_controller, catalog),
-            WindowInputTool(window_controller, input_controller or FakeInputController(), catalog),
+            WindowInputTool(window_controller, input_controller or FakeInputController(), catalog,
+                            editable_control_resolver or FakeEditableControlResolver()),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from desktop_assistant.app_tools import AppStatusTool, CloseAppTool
 from desktop_assistant.assistant import Assistant
 from desktop_assistant.config import AppCatalog, Settings, load_settings
+from desktop_assistant.editable_controls import EditableControlResolver, WindowsEditableControlResolver
 from desktop_assistant.filesystem import FilesystemPathValidator
 from desktop_assistant.filesystem_tools import (
     CreateFolderTool,
@@ -72,6 +73,7 @@ def build_assistant(
     task_runner: ProjectTaskRunner | None = None,
     window_controller: WindowController | None = None,
     input_controller: InputController | None = None,
+    editable_control_resolver: EditableControlResolver | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -86,6 +88,7 @@ def build_assistant(
     task_runner = task_runner or SubprocessProjectTaskRunner()
     window_controller = window_controller or WindowsWindowController()
     input_controller = input_controller or WindowsInputController()
+    editable_control_resolver = editable_control_resolver or WindowsEditableControlResolver()
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -106,7 +109,7 @@ def build_assistant(
             RunProjectTaskTool(project_catalog, task_runner),
             WindowInfoTool(window_controller),
             FocusWindowTool(window_controller, catalog),
-            WindowInputTool(window_controller, input_controller, catalog),
+            WindowInputTool(window_controller, input_controller, catalog, editable_control_resolver),
         ),
         known_folders=known_folders,
     )

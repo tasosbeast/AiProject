@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 from importlib.util import find_spec
+from PyInstaller.utils.hooks import collect_submodules
 
 
 repository_root = Path(SPECPATH).resolve().parent
@@ -35,6 +36,12 @@ hidden_imports = [
     "PySide6.QtMultimedia",
     "PySide6.QtNetwork",
 ]
+
+# Generate UIAutomationClient's COM typelib wrappers during packaging. The
+# editor resolver also generates them lazily for non-frozen development runs.
+import comtypes.client
+comtypes.client.GetModule("UIAutomationCore.dll")
+hidden_imports.extend(collect_submodules("comtypes.gen"))
 
 analysis = Analysis(
     [str(entrypoint)],

@@ -9,6 +9,9 @@ from types import MappingProxyType
 from typing import Callable, Protocol
 
 from desktop_assistant.config import AppCatalog
+from desktop_assistant.editable_controls import (
+    EditableControlError, EditableControlResolver, WindowsEditableControlResolver,
+)
 from desktop_assistant.models import RiskLevel, ToolArguments, ToolPreparation, ToolResult
 from desktop_assistant.process_control import WindowController, WindowInfo
 from desktop_assistant.windows import match_window_for_focus
@@ -212,10 +215,12 @@ class WindowInputTool:
     risk_level = RiskLevel.SENSITIVE
     allowed_actions = tuple(action.value for action in InputAction)
 
-    def __init__(self, windows: WindowController, inputs: InputController, catalog: AppCatalog) -> None:
+    def __init__(self, windows: WindowController, inputs: InputController, catalog: AppCatalog,
+                 editable_controls: EditableControlResolver | None = None) -> None:
         self._windows = windows
         self._inputs = inputs
         self._catalog = catalog
+        self._editable_controls = editable_controls or WindowsEditableControlResolver()
 
     def _failure(self, message: str) -> ToolResult:
         return ToolResult(False, message, self.risk_level)
@@ -291,7 +296,24 @@ class WindowInputTool:
                 return (self._windows.is_window_valid(target.handle, target.process_id)
                         and self._matches(target, self._windows.get_foreground_window()))
 
-            self._inputs.send(target.action, target.value, verify_target)
+            if target.action in _TEXT_ACTIONS:
+                if not verify_target():
+                    return self._failure("The prepared window lost foreground focus. No input sent.")
+                with self._editable_controls.focus(target.handle, target.process_id) as editor:
+                    if not verify_target() or not editor.is_focused():
+                        return self._failure("The editable text control lost focus. No input sent.")
+                    # WindowsInputController calls this guard immediately before
+                    # SendInput, so a late focus change also sends zero events.
+                    self._inputs.send(target.action, target.value,
+                                      lambda: verify_target() and editor.is_focused())
+            else:
+                self._inputs.send(target.action, target.value, verify_target)
+        except EditableControlError as exc:
+            if str(exc) == "No editable text control could be identified":
+                return self._failure(f"No editable text control could be identified in {target.title}.")
+            if str(exc) == "Multiple equally suitable editable text controls were found":
+                return self._failure(f"Multiple equally suitable editable text controls were found in {target.title}.")
+            return self._failure(str(exc))
         except InputError as exc:
             return self._failure(str(exc))
         except Exception:
