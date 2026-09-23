@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from enum import Enum
+import logging
 from typing import Protocol
 
 from desktop_assistant.config import AppCatalog
@@ -13,8 +15,10 @@ from desktop_assistant.windows import bounded_window_label, match_window_for_foc
 
 
 MAX_CONTROLS = 40
+MAX_SCANNED_ELEMENTS = 1000
 MAX_NAME = 120
 MAX_AUTOMATION_ID = 80
+logger = logging.getLogger(__name__)
 
 
 def _bounded(value: object, limit: int) -> str:
@@ -49,8 +53,21 @@ class UIInspection:
     truncated: bool
 
 
+class InspectionStage(str, Enum):
+    BACKEND_OPEN = "backend_open"
+    ELEMENT_FROM_HANDLE = "element_from_handle"
+    ROOT_IDENTITY = "root_identity"
+    CONDITION_CREATION = "condition_creation"
+    FIND_ALL = "find_all"
+    FINAL_ROOT_IDENTITY = "final_root_identity"
+
+
 class UIInspectionError(RuntimeError):
     """UI Automation could not safely inspect the prepared window."""
+
+    def __init__(self, stage: InspectionStage) -> None:
+        super().__init__("The window controls could not be inspected safely.")
+        self.stage = stage
 
 
 class UIInspector(Protocol):
@@ -81,29 +98,32 @@ class WindowsUIInspector:
         self._backend = backend or WindowsAutomationBackend()
 
     def inspect(self, handle: int, process_id: int) -> UIInspection:
+        stage = InspectionStage.BACKEND_OPEN
         try:
             with self._backend.open() as (automation, types):
+                stage = InspectionStage.ELEMENT_FROM_HANDLE
                 root = automation.ElementFromHandle(handle)
+                stage = InspectionStage.ROOT_IDENTITY
                 if (root is None or root.CurrentNativeWindowHandle != handle
                         or root.CurrentProcessId != process_id):
-                    raise UIInspectionError("The prepared window identity changed.")
-                type_names = {
-                    getattr(types, f"UIA_{raw}ControlTypeId"): friendly
-                    for raw, friendly in _CONTROL_TYPES
-                }
-                conditions = [
-                    automation.CreatePropertyCondition(types.UIA_ControlTypePropertyId, control_id)
-                    for control_id in type_names
-                ]
-                condition = conditions[0]
-                for next_condition in conditions[1:]:
-                    condition = automation.CreateOrCondition(condition, next_condition)
+                    raise UIInspectionError(stage)
+                type_names = {}
+                for raw, friendly in _CONTROL_TYPES:
+                    try:
+                        type_names[getattr(types, f"UIA_{raw}ControlTypeId")] = friendly
+                    except Exception:
+                        # Optional typelib constants must not disable other types.
+                        continue
+                stage = InspectionStage.CONDITION_CREATION
+                condition = automation.CreateTrueCondition()
                 # FindAll is rooted in the prepared HWND, never the desktop. The
                 # ancestry check below also rejects a provider's stray result.
+                stage = InspectionStage.FIND_ALL
                 found = root.FindAll(types.TreeScope_Descendants, condition)
+                count = found.Length
                 controls: list[UIElementInfo] = []
-                truncated = False
-                for index in range(found.Length):
+                truncated = count >= MAX_SCANNED_ELEMENTS
+                for index in range(min(count, MAX_SCANNED_ELEMENTS)):
                     try:
                         element = found.GetElement(index)
                         if (element.CurrentProcessId != process_id
@@ -121,15 +141,16 @@ class WindowsUIInspector:
                         truncated = True
                         break
                     controls.append(info)
+                stage = InspectionStage.FINAL_ROOT_IDENTITY
                 if (root.CurrentNativeWindowHandle != handle
                         or root.CurrentProcessId != process_id):
-                    raise UIInspectionError("The prepared window identity changed.")
+                    raise UIInspectionError(stage)
+                stage = InspectionStage.BACKEND_OPEN
                 return UIInspection(tuple(controls), truncated)
-        except UIInspectionError:
-            raise
-        except Exception:
-            # COM/provider exceptions may include private control text.
-            raise UIInspectionError("The window controls could not be inspected safely.") from None
+        except Exception as exc:
+            # Never include exception messages, tracebacks or application data.
+            logger.warning("stage=%s exception=%s", stage.value, type(exc).__name__)
+            raise UIInspectionError(stage) from None
 
     @staticmethod
     def _within_root(automation: object, types: object, root: object, element: object) -> bool:
@@ -253,7 +274,8 @@ class UIInspectTool:
             "truncated": truncated,
         }
         if not controls:
-            return ToolResult(True, f"No supported interactive controls were found in {title}.",
+            suffix = " Results truncated by the scan limit." if truncated else ""
+            return ToolResult(True, f"No supported interactive controls were found in {title}.{suffix}",
                               self.risk_level, details)
         lines = [f"Controls in {title}:"]
         for index, control in enumerate(controls, 1):
@@ -267,5 +289,5 @@ class UIInspectTool:
             suffix = f" [{', '.join(flags)}]" if flags else ""
             lines.append(f"{index}. {control.control_type}{label}{suffix}")
         if truncated:
-            lines.append("Results truncated to the first 40 supported controls.")
+            lines.append("Results truncated by the control or scan limit.")
         return ToolResult(True, "\n".join(lines), self.risk_level, details)

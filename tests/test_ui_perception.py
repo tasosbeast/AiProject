@@ -14,7 +14,8 @@ from desktop_assistant.intent.openai_provider import _INSTRUCTIONS
 from desktop_assistant.models import RiskLevel, ToolResult
 from desktop_assistant.process_control import WindowInfo
 from desktop_assistant.ui_perception import (
-    MAX_CONTROLS, UIElementInfo, UIInspection, UIInspectionError, WindowsUIInspector,
+    MAX_CONTROLS, MAX_SCANNED_ELEMENTS, InspectionStage,
+    UIElementInfo, UIInspection, UIInspectionError, WindowsUIInspector,
     _CONTROL_TYPES, _PATTERNS,
 )
 
@@ -117,11 +118,11 @@ class Automation:
         self.handles.append(handle)
         return self.root
 
-    def CreatePropertyCondition(self, prop, value):
-        return (prop, value)
+    def CreateTrueCondition(self):
+        return "true-condition"
 
     def CreateOrCondition(self, left, right):
-        return (left, right)
+        raise AssertionError("Composite conditions are forbidden")
 
     def CompareElements(self, left, right):
         return left is right
@@ -406,3 +407,74 @@ def test_bootstrap_injects_inspector_and_routes_provider_action():
     result = assistant.handle("Τι κουμπιά έχει το Notepad;")
     assert result.success and "Settings" in result.message
     assert inspector.calls == [(71, 17)] and controller.focused_handles == []
+
+
+def test_true_condition_and_missing_optional_constant(monkeypatch):
+    children = [Element(T.UIA_ButtonControlTypeId, name="Save"),
+                Element(T.UIA_TextControlTypeId, name="Decoration"),
+                Element(T.UIA_DocumentControlTypeId, name="Editor")]
+    root, _, inspector = backend(*children)
+    monkeypatch.delattr(T, "UIA_SpinnerControlTypeId")
+    result = inspector.inspect(71, 17)
+    assert root.searches == [(T.TreeScope_Descendants, "true-condition")]
+    assert [c.name for c in result.controls] == ["Save", "Editor"]
+
+
+@pytest.mark.parametrize("count", [MAX_SCANNED_ELEMENTS, MAX_SCANNED_ELEMENTS + 10])
+def test_scan_bound_is_independent_of_supported_result_bound(count):
+    root, _, inspector = backend()
+    decorative = Element(T.UIA_PaneControlTypeId, parent=root)
+    button = Element(T.UIA_ButtonControlTypeId, parent=root, name="Save")
+    scanned = []
+    def get_element(index):
+        scanned.append(index)
+        return button if index == 0 else decorative
+    root.FindAll = lambda scope, condition: SimpleNamespace(Length=count, GetElement=get_element)
+    result = inspector.inspect(71, 17)
+    assert scanned == list(range(MAX_SCANNED_ELEMENTS))
+    assert [c.name for c in result.controls] == ["Save"]
+    assert result.truncated
+
+
+@pytest.mark.parametrize("stage", list(InspectionStage))
+def test_hard_failure_stage_is_logged_without_provider_content(stage, caplog):
+    root, automation, inspector = backend(Element(T.UIA_ButtonControlTypeId))
+    def fail(*args):
+        raise OSError("SECRET provider application content")
+    if stage is InspectionStage.BACKEND_OPEN:
+        inspector._backend.open = fail
+    elif stage is InspectionStage.ELEMENT_FROM_HANDLE:
+        automation.ElementFromHandle = fail
+    elif stage is InspectionStage.ROOT_IDENTITY:
+        root.CurrentProcessId = 999
+    elif stage is InspectionStage.CONDITION_CREATION:
+        automation.CreateTrueCondition = fail
+    elif stage is InspectionStage.FIND_ALL:
+        root.FindAll = fail
+    else:
+        original_find = root.FindAll
+        def change_identity(*args):
+            root.CurrentProcessId = 999
+            return original_find(*args)
+        root.FindAll = change_identity
+    with pytest.raises(UIInspectionError) as error:
+        inspector.inspect(71, 17)
+    assert error.value.stage is stage
+    assert str(error.value) == "The window controls could not be inspected safely."
+    records = [r for r in caplog.records if r.name == "desktop_assistant.ui_perception"]
+    assert len(records) == 1
+    expected_class = "UIInspectionError" if stage in {
+        InspectionStage.ROOT_IDENTITY, InspectionStage.FINAL_ROOT_IDENTITY,
+    } else "OSError"
+    assert records[0].getMessage() == f"stage={stage.value} exception={expected_class}"
+    assert records[0].exc_info is None
+    assert "SECRET" not in caplog.text and "SECRET" not in str(error.value)
+
+
+def test_inspector_contains_no_content_or_mutation_api_calls():
+    import inspect
+    source = inspect.getsource(WindowsUIInspector)
+    for forbidden in ("SetFocus", "SetForegroundWindow", "Invoke(", "SetValue",
+                      "Select(", "Toggle(", "Expand(", "Scroll(", "SendInput",
+                      "RuntimeId", "CurrentValue", "DocumentRange", "Clipboard"):
+        assert forbidden not in source
