@@ -4,12 +4,14 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
+from enum import Enum
 import os
 from time import monotonic, sleep
 from typing import Callable, Protocol
 
 from desktop_assistant.models import RiskLevel, ToolArguments, ToolPreparation, ToolResult
 from desktop_assistant.process_control import WindowController
+from desktop_assistant.runtime_paths import RuntimePaths
 from desktop_assistant.visual_perception import (
     NormalizedVisualBounds, PreparedVisualLocationTarget, VisualTargetStatus,
     VisualTargetTool, revalidate_visual_target_window,
@@ -158,6 +160,17 @@ class PreparedVisualClick:
     rectangle: WindowRectangle
 
 
+class ForegroundComparison(str, Enum):
+    NO_FOREGROUND = "no foreground window observed"
+    HWND_MISMATCH = "HWND mismatch"
+    PID_MISMATCH = "PID mismatch"
+    TITLE_MISMATCH = "title mismatch"
+    EXECUTABLE_MISMATCH = "executable mismatch"
+    MINIMIZED = "target observed minimized"
+    EXACT = "exact match"
+    UNAVAILABLE = "foreground comparison unavailable"
+
+
 class VisualClickTool:
     name = "visual_click"
     risk_level = RiskLevel.SENSITIVE
@@ -170,6 +183,7 @@ class VisualClickTool:
         self._mouse = mouse
         self._clock = clock
         self._sleep = sleeper
+        self._source_diagnostics = not RuntimePaths.detect().is_frozen
 
     def _failure(self, message: str) -> ToolResult:
         return ToolResult(False, message, self.risk_level)
@@ -220,29 +234,45 @@ class VisualClickTool:
             self._windows, target.handle, target.process_id, target.title, target.executable_name,
         )
 
-    def _foreground_matches(self, target: PreparedVisualClick) -> bool:
+    def _compare_foreground(self, target: PreparedVisualClick) -> ForegroundComparison:
         current = self._windows.get_foreground_window()
-        return current is not None and (
-            current.handle == target.handle and current.process_id == target.process_id
-            and current.title == target.title and not current.minimized
-            and current.executable_name.casefold() == target.executable_name.casefold()
-        )
+        if current is None:
+            return ForegroundComparison.NO_FOREGROUND
+        if current.handle != target.handle:
+            return ForegroundComparison.HWND_MISMATCH
+        if current.process_id != target.process_id:
+            return ForegroundComparison.PID_MISMATCH
+        if current.title != target.title:
+            return ForegroundComparison.TITLE_MISMATCH
+        if current.minimized:
+            return ForegroundComparison.MINIMIZED
+        if current.executable_name.casefold() != target.executable_name.casefold():
+            return ForegroundComparison.EXECUTABLE_MISMATCH
+        return ForegroundComparison.EXACT
 
-    def _wait_for_foreground(self, target: PreparedVisualClick) -> bool:
+    def _foreground_matches(self, target: PreparedVisualClick) -> bool:
+        return self._compare_foreground(target) is ForegroundComparison.EXACT
+
+    def _wait_for_foreground(self, target: PreparedVisualClick) -> ForegroundComparison:
+        observed = ForegroundComparison.NO_FOREGROUND
         try:
             deadline = self._clock() + 0.3
             # The observed exact identity, not this API's return value, authorizes progress.
             self._windows.set_foreground_window(target.handle)
             for poll in range(11):
-                if self._foreground_matches(target):
-                    return True
+                comparison = self._compare_foreground(target)
+                if comparison is ForegroundComparison.EXACT:
+                    return comparison
+                # Retain the latest concrete mismatch through transient empty observations.
+                if comparison is not ForegroundComparison.NO_FOREGROUND:
+                    observed = comparison
                 remaining = deadline - self._clock()
                 if remaining <= 0 or poll == 10:
                     break
                 self._sleep(min(0.03, remaining))
         except Exception:
-            return False
-        return False
+            return observed if observed is not ForegroundComparison.NO_FOREGROUND else ForegroundComparison.UNAVAILABLE
+        return observed
 
     def execute(self, prepared_value: object) -> ToolResult:
         if not isinstance(prepared_value, PreparedVisualClick):
@@ -251,8 +281,12 @@ class VisualClickTool:
         try:
             if not self._valid_window(target) or self._mouse.get_window_rect(target.handle) != target.rectangle:
                 return self._failure("The prepared window changed or moved. No click sent.")
-            if not self._wait_for_foreground(target):
-                return self._failure("Windows could not verify foreground focus. No click sent.")
+            foreground = self._wait_for_foreground(target)
+            if foreground is not ForegroundComparison.EXACT:
+                message = "Windows could not verify foreground focus. No click sent."
+                if self._source_diagnostics:
+                    message += f"\nDiagnostic: {foreground.value}."
+                return self._failure(message)
             point = _click_point(target.bounds, target.rectangle)
 
             def verify_target() -> bool:
