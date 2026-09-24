@@ -5,6 +5,7 @@ import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
 import os
+from time import monotonic, sleep
 from typing import Callable, Protocol
 
 from desktop_assistant.models import RiskLevel, ToolArguments, ToolPreparation, ToolResult
@@ -162,10 +163,13 @@ class VisualClickTool:
     risk_level = RiskLevel.SENSITIVE
 
     def __init__(self, windows: WindowController, targeting: VisualTargetTool,
-                 mouse: MouseClickController) -> None:
+                 mouse: MouseClickController, *, clock: Callable[[], float] = monotonic,
+                 sleeper: Callable[[float], None] = sleep) -> None:
         self._windows = windows
         self._targeting = targeting
         self._mouse = mouse
+        self._clock = clock
+        self._sleep = sleeper
 
     def _failure(self, message: str) -> ToolResult:
         return ToolResult(False, message, self.risk_level)
@@ -224,6 +228,22 @@ class VisualClickTool:
             and current.executable_name.casefold() == target.executable_name.casefold()
         )
 
+    def _wait_for_foreground(self, target: PreparedVisualClick) -> bool:
+        try:
+            deadline = self._clock() + 0.3
+            # The observed exact identity, not this API's return value, authorizes progress.
+            self._windows.set_foreground_window(target.handle)
+            for poll in range(11):
+                if self._foreground_matches(target):
+                    return True
+                remaining = deadline - self._clock()
+                if remaining <= 0 or poll == 10:
+                    break
+                self._sleep(min(0.03, remaining))
+        except Exception:
+            return False
+        return False
+
     def execute(self, prepared_value: object) -> ToolResult:
         if not isinstance(prepared_value, PreparedVisualClick):
             return self._failure("The prepared visual click is invalid.")
@@ -231,7 +251,7 @@ class VisualClickTool:
         try:
             if not self._valid_window(target) or self._mouse.get_window_rect(target.handle) != target.rectangle:
                 return self._failure("The prepared window changed or moved. No click sent.")
-            if not self._windows.set_foreground_window(target.handle) or not self._foreground_matches(target):
+            if not self._wait_for_foreground(target):
                 return self._failure("Windows could not verify foreground focus. No click sent.")
             point = _click_point(target.bounds, target.rectangle)
 

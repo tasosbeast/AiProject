@@ -390,6 +390,19 @@ class FakeVisualPerceptionProvider:
 from desktop_assistant.visual_click import VisualClickTool, WindowRectangle
 
 
+class FakeForegroundClock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 class FakeMouseClickController:
     def __init__(self):
         self.rectangle = WindowRectangle(100, 200, 900, 800)
@@ -458,6 +471,7 @@ def make_registry(
     window_controller = window_controller or FakeWindowController()
     capture_backend = window_capture_backend or FakeWindowCaptureBackend()
     vision_provider = visual_perception_provider or FakeVisualPerceptionProvider()
+    foreground_clock = FakeForegroundClock()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -495,7 +509,8 @@ def make_registry(
             ),
             VisualClickTool(window_controller,
                             VisualTargetTool(window_controller, catalog, capture_backend, vision_provider),
-                            mouse_click_controller or FakeMouseClickController()),
+                            mouse_click_controller or FakeMouseClickController(),
+                            clock=foreground_clock.clock, sleeper=foreground_clock.sleep),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

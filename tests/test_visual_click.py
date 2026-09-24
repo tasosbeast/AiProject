@@ -153,7 +153,9 @@ def test_execution_guards_send_zero_click_and_no_cursor_move(change):
     elif change == "minimized": windows.windows = [replace(TARGET, minimized=True)]
     elif change == "moved": mouse.rectangle = WindowRectangle(200, 200, 1000, 800)
     elif change == "resized": mouse.rectangle = WindowRectangle(100, 200, 1000, 800)
-    elif change == "focus_failed": windows.focus_succeeds = False
+    elif change == "focus_failed":
+        windows.focus_succeeds = False
+        windows.active_window = None
     elif change == "wrong_foreground": windows.active_window = replace(TARGET, handle=202)
     elif change == "wrong_root": mouse.root = 202
     result = registry.confirm(request.confirmation_id)
