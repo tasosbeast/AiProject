@@ -11,6 +11,7 @@ class IntentKind(str, Enum):
     ACTION_PLAN = "action_plan"
     CONVERSATION = "conversation"
     UNSUPPORTED = "unsupported"
+    OBSERVE_UI_THEN_DECIDE = "observe_ui_then_decide"
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,16 @@ class ToolAction:
         if not isinstance(self.arguments, Mapping):
             raise TypeError("ToolAction arguments must be a Mapping.")
         object.__setattr__(self, "arguments", MappingProxyType(dict(self.arguments)))
+
+
+@dataclass(frozen=True, slots=True)
+class ObserveUIIntent:
+    query: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.query, str) or not self.query.strip():
+            raise ValueError("Target window query must be a non-empty string.")
+        object.__setattr__(self, "query", self.query.strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +54,11 @@ class IntentResult:
     action: ToolAction | None = None
     plan: ActionPlan | None = None
     message: str | None = None
+    observe_ui: ObserveUIIntent | None = None
+
+    @property
+    def query(self) -> str | None:
+        return self.observe_ui.query if self.observe_ui is not None else None
 
     @classmethod
     def tool_action(cls, tool_name: str, arguments: Mapping[str, Any]) -> "IntentResult":
@@ -59,3 +75,7 @@ class IntentResult:
     @classmethod
     def unsupported(cls, message: str) -> "IntentResult":
         return cls(IntentKind.UNSUPPORTED, message=message)
+
+    @classmethod
+    def observe_ui_then_decide(cls, query: str) -> "IntentResult":
+        return cls(IntentKind.OBSERVE_UI_THEN_DECIDE, observe_ui=ObserveUIIntent(query))

@@ -23,6 +23,16 @@ from desktop_assistant.tool_registry import RegistryOutcome, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+MAX_OBSERVATION_CHARS = 2000
+
+
+def _format_observation(result: ToolResult) -> str:
+    text = (result.message or "").strip()
+    if len(text) > MAX_OBSERVATION_CHARS:
+        suffix = "\n[Observation truncated]"
+        return text[: max(0, MAX_OBSERVATION_CHARS - len(suffix))] + suffix
+    return text
+
 
 @dataclass(slots=True)
 class _PendingPlan:
@@ -147,6 +157,16 @@ class Assistant:
             if intent.plan is None:
                 return self._completed(ToolResult(False, "The requested action plan was invalid.", RiskLevel.SAFE))
             return self._handle_action_plan(intent.plan, cancellation_token=cancellation_token)
+
+        if intent.kind is IntentKind.OBSERVE_UI_THEN_DECIDE:
+            query = intent.observe_ui.query if intent.observe_ui is not None else ""
+            if not query:
+                return self._completed(ToolResult(False, "Window query must not be empty.", RiskLevel.SAFE))
+            return self._handle_observe_ui_then_decide(
+                request,
+                query,
+                cancellation_token=cancellation_token,
+            )
 
         return self._completed(
             ToolResult(False, intent.message or "That action is not supported yet.", RiskLevel.SAFE)
@@ -370,6 +390,79 @@ class Assistant:
             return self._completed(
                 ToolResult(True, msg, self._aggregate_risk(completed_results))
             )
+
+    def _handle_observe_ui_then_decide(
+        self,
+        request: str,
+        query: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        if self._is_cancelled(cancellation_token):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+        # 1. Execute SAFE ui_inspect through ToolRegistry
+        with self._execution_lock:
+            if self._is_cancelled(cancellation_token):
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+            inspect_outcome = self._tool_registry.execute("ui_inspect", {"query": query})
+
+        if isinstance(inspect_outcome, ConfirmationRequest):
+            return AssistantResponse.confirmation_required(inspect_outcome)
+
+        if not inspect_outcome.success:
+            # If inspection fails: stop safely. Do not make the second provider call.
+            return self._completed(inspect_outcome)
+
+        if self._is_cancelled(cancellation_token):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+        # Format and bound sanitized observation
+        observation = _format_observation(inspect_outcome)
+
+        if self._intent_provider is None or not hasattr(self._intent_provider, "decide_from_observation"):
+            return self._completed(
+                ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+            )
+
+        # 2. Second provider call: choose the final action from observation
+        try:
+            decision = self._intent_provider.decide_from_observation(request, observation)
+        except IntentProviderError as exc:
+            logger.warning("Second decision provider unavailable: %s", type(exc).__name__)
+            return self._completed(
+                ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+            )
+        except Exception:
+            logger.exception("Unexpected second decision provider failure")
+            return self._completed(
+                ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE)
+            )
+
+        if self._is_cancelled(cancellation_token):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+        # Validate that the second decision is strictly one ToolAction, Conversation, or Unsupported
+        if decision.kind is IntentKind.CONVERSATION:
+            return self._completed(ToolResult(True, decision.message or "How can I help?", RiskLevel.SAFE))
+
+        if decision.kind is IntentKind.UNSUPPORTED:
+            return self._completed(
+                ToolResult(False, decision.message or "That action is not supported yet.", RiskLevel.SAFE)
+            )
+
+        if decision.kind is IntentKind.TOOL_ACTION:
+            if decision.action is None:
+                return self._completed(ToolResult(False, "The requested action was invalid.", RiskLevel.SAFE))
+            if decision.action.tool_name == "observe_ui_then_decide":
+                return self._completed(ToolResult(False, "Observation cannot be chained.", RiskLevel.SAFE))
+            return self._execute_action(
+                decision.action.tool_name,
+                decision.action.arguments,
+                cancellation_token=cancellation_token,
+            )
+
+        return self._completed(ToolResult(False, "Observation cannot be chained or planned.", RiskLevel.SAFE))
 
     def _execute_action(
         self,

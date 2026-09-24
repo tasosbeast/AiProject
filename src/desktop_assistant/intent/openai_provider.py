@@ -208,6 +208,26 @@ Action: ui_action with query: Notepad, control: Spell check, action: toggle_on
 
 For ui_action, require an explicit target window, accessible control name, and action ('invoke', 'select', 'expand', 'collapse', 'toggle_on', 'toggle_off').
 
+OBSERVE UI BEFORE DECIDING:
+If the user expresses a UI goal targeting an existing window (e.g., 'Άνοιξε τις ρυθμίσεις του Notepad.', 'Open Notepad settings.', 'Βρες το κουμπί για settings στο Notepad και άνοιξέ το.') but does not provide enough reliable semantic control information (the exact accessible control name or specific action), call observe_ui_then_decide with query: <window>.
+Do NOT call observe_ui_then_decide when the target control and action are already explicit; route explicit requests directly:
+User: 'Πάτα Settings στο Notepad.' -> direct ui_action with query: Notepad, control: Settings, action: invoke
+User: 'Άνοιξε το Spell check στο Notepad.' -> direct ui_action with query: Notepad, control: Spell check, action: toggle_on
+User: 'Turn on Spell check in Notepad.' -> direct ui_action with query: Notepad, control: Spell check, action: toggle_on
+
+Examples for observe_ui_then_decide:
+User: 'Άνοιξε τις ρυθμίσεις του Notepad.'
+Action: observe_ui_then_decide with query: Notepad
+
+User: 'Βρες το κουμπί για settings στο Notepad και άνοιξέ το.'
+Action: observe_ui_then_decide with query: Notepad
+
+User: 'Open Notepad settings.'
+Action: observe_ui_then_decide with query: Notepad
+
+User: 'Anoikse tis rythmiseis tou Notepad.'
+Action: observe_ui_then_decide with query: Notepad
+
 User: 'Άνοιξε το Spotify και μετά γύρνα στο VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
 
@@ -218,6 +238,35 @@ User: 'Anoikse Spotify kai meta gyrna sto VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
 
 Never claim an action succeeded; local validation, safety policy, and confirmation remain authoritative. Requests may be English, Greek, Greeklish, or mixed. For a bare domain, use https://. Known-folder path values may start with Home, Desktop, Documents, Downloads, Music, Pictures, or Videos. Preserve explicit source and destination paths."""
+
+_OBSERVATION_INSTRUCTIONS = """You decide the final action for a user request based on a read-only UI observation of the target window.
+
+Choose exactly one supported computer action from the available tools that fulfills the user's goal given the observed controls, or respond_conversationally, or report_unsupported.
+
+For ui_action:
+- Window query: explicit target window name
+- Control: exact accessible control name or label as observed
+- Action: exact UI action ('invoke', 'select', 'expand', 'collapse', 'toggle_on', 'toggle_off')
+
+Never propose action plans or repeated observations. If no suitable control exists, call report_unsupported."""
+
+_OBSERVE_UI_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "name": "observe_ui_then_decide",
+    "description": "Inspect an existing window's UI controls before deciding what action to take when the user expresses a UI goal without enough explicit semantic control information.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Existing window title or application name to observe.",
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
 
 _CONTROL_SCHEMAS: tuple[dict[str, Any], ...] = (
     {
@@ -327,7 +376,7 @@ class OpenAIIntentProvider:
     ) -> None:
         self._model = model
         base_tool_schemas = [
-            t for t in tool_schemas if t.get("name") != "propose_action_plan"
+            t for t in tool_schemas if t.get("name") not in ("propose_action_plan", "observe_ui_then_decide")
         ]
         self._registered_tools = {tool["name"]: tool for tool in base_tool_schemas if "name" in tool}
         wire_schemas = deepcopy(base_tool_schemas)
@@ -341,7 +390,8 @@ class OpenAIIntentProvider:
                         prop["enum"].append(None)
             parameters["required"] = list(parameters.get("properties", {}))
         self._plan_schema = build_plan_tool_schema(wire_schemas)
-        self._tools = [*wire_schemas, self._plan_schema, *_CONTROL_SCHEMAS]
+        self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, *_CONTROL_SCHEMAS]
+        self._observation_tools = [*wire_schemas, *_CONTROL_SCHEMAS]
         self._client = client or OpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
@@ -352,14 +402,19 @@ class OpenAIIntentProvider:
     def plan_schema(self) -> dict[str, Any]:
         return deepcopy(self._plan_schema)
 
-    def resolve(self, request: str) -> IntentResult:
-        started = perf_counter()
+    def _call_api(
+        self,
+        instructions: str,
+        input_text: str,
+        tools: list[dict[str, Any]],
+        started: float,
+    ) -> list[object]:
         try:
             response = self._client.responses.create(  # type: ignore[attr-defined]
                 model=self._model,
-                instructions=_INSTRUCTIONS,
-                input=request,
-                tools=self._tools,
+                instructions=instructions,
+                input=input_text,
+                tools=tools,
                 tool_choice="required",
                 parallel_tool_calls=False,
                 max_output_tokens=8192,
@@ -390,6 +445,11 @@ class OpenAIIntentProvider:
         calls = [item for item in output if getattr(item, "type", None) == "function_call"]
         if not calls:
             raise MalformedIntentResponseError("Expected at least one structured intent.")
+        return calls
+
+    def resolve(self, request: str) -> IntentResult:
+        started = perf_counter()
+        calls = self._call_api(_INSTRUCTIONS, request, self._tools, started)
 
         if len(calls) > 1:
             self._log_success(IntentKind.UNSUPPORTED, started)
@@ -412,6 +472,16 @@ class OpenAIIntentProvider:
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported(message)
 
+        if name == "observe_ui_then_decide":
+            if (
+                not isinstance(arguments, dict)
+                or not isinstance(arguments.get("query"), str)
+                or not arguments["query"].strip()
+            ):
+                raise MalformedIntentResponseError("observe_ui_then_decide requires a non-empty 'query' argument.")
+            self._log_success(IntentKind.OBSERVE_UI_THEN_DECIDE, started)
+            return IntentResult.observe_ui_then_decide(arguments["query"].strip())
+
         if name == "propose_action_plan":
             return self._parse_action_plan(arguments, started)
 
@@ -424,6 +494,54 @@ class OpenAIIntentProvider:
         action = ToolAction(name, self._local_arguments(name, arguments))
         logger.info(
             "Intent resolved",
+            extra={
+                "model": self._model,
+                "result_type": IntentKind.TOOL_ACTION.value,
+                "requested_tool": action.tool_name,
+                "latency_ms": round((perf_counter() - started) * 1000),
+            },
+        )
+        return IntentResult.tool_action(action.tool_name, action.arguments)
+
+    def decide_from_observation(self, request: str, observation: str) -> IntentResult:
+        started = perf_counter()
+        prompt = f"Original user request: {request}\n\nObserved UI controls:\n{observation}"
+        calls = self._call_api(_OBSERVATION_INSTRUCTIONS, prompt, self._observation_tools, started)
+
+        if len(calls) > 1:
+            self._log_success(IntentKind.UNSUPPORTED, started)
+            return IntentResult.unsupported("Multiple independent function calls are not supported.")
+
+        call = calls[0]
+        name = getattr(call, "name", None)
+        if not isinstance(name, str) or not name:
+            raise MalformedIntentResponseError("Intent call name was missing.")
+
+        arguments = self._parse_arguments(getattr(call, "arguments", None))
+
+        if name == "respond_conversationally":
+            message = self._control_message(arguments)
+            self._log_success(IntentKind.CONVERSATION, started)
+            return IntentResult.conversation(message)
+
+        if name == "report_unsupported":
+            message = self._control_message(arguments)
+            self._log_success(IntentKind.UNSUPPORTED, started)
+            return IntentResult.unsupported(message)
+
+        if name in ("propose_action_plan", "observe_ui_then_decide"):
+            self._log_success(IntentKind.UNSUPPORTED, started)
+            return IntentResult.unsupported("Observation cannot be chained or planned.")
+
+        # Single registered tool call
+        from desktop_assistant.intent.models import ToolAction
+
+        if self._registered_tools and name not in self._registered_tools:
+            raise MalformedIntentResponseError(f"Unknown tool call: {name}")
+
+        action = ToolAction(name, self._local_arguments(name, arguments))
+        logger.info(
+            "Observation intent resolved",
             extra={
                 "model": self._model,
                 "result_type": IntentKind.TOOL_ACTION.value,

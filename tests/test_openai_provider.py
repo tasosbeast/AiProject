@@ -718,4 +718,115 @@ def test_provider_resolves_window_actions_and_plan() -> None:
     assert result.plan.actions[1].arguments == {"query": "VS Code"}
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Άνοιξε τις ρυθμίσεις του Notepad.",
+        "Open Notepad settings.",
+        "Anoikse tis rythmiseis tou Notepad.",
+        "Βρες το κουμπί για settings στο Notepad και άνοιξέ το.",
+    ],
+)
+def test_provider_resolves_observe_ui_then_decide(request_text: str) -> None:
+    response = SimpleNamespace(
+        output=[function_call("observe_ui_then_decide", '{"query":"Notepad"}')]
+    )
+    result = make_provider(FakeClient(response)).resolve(request_text)
+    assert result.kind is IntentKind.OBSERVE_UI_THEN_DECIDE
+    assert result.query == "Notepad"
+
+
+def test_provider_rejects_malformed_observe_ui() -> None:
+    for bad_args in ('{"query":""}', '{"query":"   "}', "{}", '{"window":"Notepad"}'):
+        response = SimpleNamespace(
+            output=[function_call("observe_ui_then_decide", bad_args)]
+        )
+        with pytest.raises(MalformedIntentResponseError):
+            make_provider(FakeClient(response)).resolve("Open Notepad settings.")
+
+
+def test_provider_decide_from_observation_single_action() -> None:
+    response = SimpleNamespace(
+        output=[
+            function_call(
+                "ui_action",
+                '{"query":"Notepad","control":"Settings","action":"invoke"}',
+            )
+        ]
+    )
+    fake_client = FakeClient(response)
+    provider = make_provider(fake_client)
+
+    obs = "1. button — Settings [invoke]\n2. check_box — Spell check [toggle]"
+    result = provider.decide_from_observation("Open Notepad settings.", obs)
+
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "ui_action"
+    assert result.action.arguments == {
+        "query": "Notepad",
+        "control": "Settings",
+        "action": "invoke",
+    }
+
+    # Verify call parameters
+    assert len(fake_client.responses.calls) == 1
+    call_kwargs = fake_client.responses.calls[0]
+    assert "Original user request: Open Notepad settings." in str(call_kwargs["input"])
+    assert obs in str(call_kwargs["input"])
+    tool_names = [t.get("name") or t.get("function", {}).get("name") for t in call_kwargs["tools"]]
+    assert "propose_action_plan" not in tool_names
+    assert "observe_ui_then_decide" not in tool_names
+
+
+def test_provider_decide_from_observation_conversational_and_unsupported() -> None:
+    conv_response = SimpleNamespace(
+        output=[function_call("respond_conversationally", '{"message":"I see the settings."}')]
+    )
+    result_conv = make_provider(FakeClient(conv_response)).decide_from_observation("Help", "1. button — Help")
+    assert result_conv.kind is IntentKind.CONVERSATION
+    assert result_conv.message == "I see the settings."
+
+    unsup_response = SimpleNamespace(
+        output=[function_call("report_unsupported", '{"message":"No settings button found."}')]
+    )
+    result_unsup = make_provider(FakeClient(unsup_response)).decide_from_observation("Settings", "1. text — Info")
+    assert result_unsup.kind is IntentKind.UNSUPPORTED
+    assert result_unsup.message == "No settings button found."
+
+
+def test_provider_decide_from_observation_rejects_plan_or_second_observe() -> None:
+    plan_response = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":[{"tool_name":"open_app","arguments":{"app_name":"Notepad"}},{"tool_name":"focus_window","arguments":{"query":"Notepad"}}]}',
+            )
+        ]
+    )
+    result_plan = make_provider(FakeClient(plan_response)).decide_from_observation("Settings", "obs")
+    assert result_plan.kind is IntentKind.UNSUPPORTED
+    assert "Observation cannot be chained or planned." in str(result_plan.message)
+
+    observe_response = SimpleNamespace(
+        output=[function_call("observe_ui_then_decide", '{"query":"Notepad"}')]
+    )
+    result_obs = make_provider(FakeClient(observe_response)).decide_from_observation("Settings", "obs")
+    assert result_obs.kind is IntentKind.UNSUPPORTED
+    assert "Observation cannot be chained or planned." in str(result_obs.message)
+
+
+def test_provider_decide_from_observation_rejects_multiple_calls() -> None:
+    multi_response = SimpleNamespace(
+        output=[
+            function_call("ui_action", '{"query":"Notepad","control":"A","action":"invoke"}'),
+            function_call("ui_action", '{"query":"Notepad","control":"B","action":"invoke"}'),
+        ]
+    )
+    result = make_provider(FakeClient(multi_response)).decide_from_observation("Settings", "obs")
+    assert result.kind is IntentKind.UNSUPPORTED
+    assert "Multiple independent function calls are not supported." in str(result.message)
+
+
+
 
