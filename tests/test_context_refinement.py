@@ -96,10 +96,12 @@ def test_refinement_receives_two_images_in_exact_order():
     # 2. Image 1 is the full screenshot
     assert content[1]["type"] == "input_image"
     assert content[1]["image_url"] == f"data:image/png;base64,{base64.b64encode(full_png).decode('ascii')}"
+    assert content[1]["detail"] == "auto"
 
     # 3. Image 2 is the local crop
     assert content[2]["type"] == "input_image"
     assert content[2]["image_url"] == f"data:image/png;base64,{base64.b64encode(crop_png).decode('ascii')}"
+    assert content[2]["detail"] == "high"
 
     instructions = req["instructions"]
     # Verify semantic instructions
@@ -336,4 +338,126 @@ def test_annotate_crop_region_edge_clamping_and_validation():
         _annotate_crop_region(raw_png, 0, 600, (0, 0, 100, 100))
     with pytest.raises(ValueError, match="Invalid captured image"):
         _annotate_crop_region(raw_png, 800, 400, (0, 0, 100, 100))
+
+
+def test_locate_control_sends_high_detail_while_locate_target_sends_auto():
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            output_text=json.dumps(
+                dict(
+                    status="found",
+                    label="+",
+                    description="Plus control",
+                    bounds=dict(left=10, top=20, right=30, bottom=40),
+                    confidence=0.95,
+                    reason=None,
+                )
+            )
+        )
+
+    provider = OpenAIVisualPerceptionProvider(
+        api_key="fake",
+        model="fake",
+        client=SimpleNamespace(responses=SimpleNamespace(create=create)),
+    )
+    fake_png = b"fake_png_data"
+
+    # 1. locate_control must use detail="high"
+    provider.locate_control(fake_png, "New Tab")
+    assert len(calls) == 1
+    call1 = calls[0]
+    content1 = call1["input"][0]["content"]
+    assert len(content1) == 2
+    assert content1[0]["type"] == "input_text"
+    assert content1[1]["type"] == "input_image"
+    assert content1[1]["detail"] == "high"
+    assert call1["max_output_tokens"] == 1200
+    assert call1["reasoning"] == {"effort": "low"}
+    assert call1["store"] is False
+
+    # 2. locate_target must use detail="auto"
+    provider.locate_target(fake_png, "New Tab")
+    assert len(calls) == 2
+    call2 = calls[1]
+    content2 = call2["input"][0]["content"]
+    assert len(content2) == 2
+    assert content2[1]["type"] == "input_image"
+    assert content2[1]["detail"] == "auto"
+
+    # 3. refine_target (single image) must use detail="auto"
+    provider.refine_target(fake_png, "New Tab")
+    assert len(calls) == 3
+    call3 = calls[2]
+    content3 = call3["input"][0]["content"]
+    assert len(content3) == 2
+    assert content3[1]["type"] == "input_image"
+    assert content3[1]["detail"] == "auto"
+
+    # 4. inspect must remain detail="auto"
+    provider.inspect(fake_png, "Describe window")
+    assert len(calls) == 4
+    call4 = calls[3]
+    content4 = call4["input"][0]["content"]
+    assert len(content4) == 2
+    assert content4[1]["type"] == "input_image"
+    assert content4[1]["detail"] == "auto"
+    assert call4["max_output_tokens"] == 700
+
+
+def test_click_context_refinement_detail_modes_and_image_order():
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            output_text=json.dumps(
+                dict(
+                    status="found",
+                    label="+",
+                    description="Plus control in sidebar",
+                    bounds=dict(left=100, top=100, right=200, bottom=200),
+                    confidence=0.98,
+                    reason="Verified in crop.",
+                )
+            )
+        )
+
+    provider = OpenAIVisualPerceptionProvider(
+        api_key="fake",
+        model="fake",
+        client=SimpleNamespace(responses=SimpleNamespace(create=create)),
+    )
+    full_png = b"full_png_context"
+    crop_png = b"crop_png_precision"
+
+    # Context refinement call
+    provider.refine_control(full_png, crop_png, "New Tab")
+    assert len(calls) == 1
+    call = calls[0]
+    content = call["input"][0]["content"]
+    assert len(content) == 3
+
+    # Exact order and selective detail
+    assert content[0]["type"] == "input_text"
+    assert content[0]["text"] == "New Tab"
+
+    # Image 1: full context -> auto
+    assert content[1]["type"] == "input_image"
+    assert content[1]["image_url"] == f"data:image/png;base64,{base64.b64encode(full_png).decode('ascii')}"
+    assert content[1]["detail"] == "auto"
+
+    # Image 2: precision crop -> high
+    assert content[2]["type"] == "input_image"
+    assert content[2]["image_url"] == f"data:image/png;base64,{base64.b64encode(crop_png).decode('ascii')}"
+    assert content[2]["detail"] == "high"
+
+    # Constraints preserved
+    assert call["max_output_tokens"] == 1200
+    assert call["reasoning"] == {"effort": "low"}
+    assert call["store"] is False
+    assert "tools" not in call
+
 

@@ -1212,13 +1212,18 @@ class OpenAIVisualPerceptionProvider:
         return observation
 
     def locate_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
-        return self._locate(png_bytes, target, _TARGETING_INSTRUCTIONS)
+        return self._locate(png_bytes, target, _TARGETING_INSTRUCTIONS, image_detail="auto")
 
     def refine_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
-        return self._locate(png_bytes, target, _REFINEMENT_INSTRUCTIONS)
+        return self._locate(png_bytes, target, _REFINEMENT_INSTRUCTIONS, image_detail="auto")
 
     def locate_control(self, png_bytes: bytes, target: str) -> VisualTargetResult:
-        return self._locate(png_bytes, target, _TARGETING_INSTRUCTIONS + _CLICK_CONTROL_INSTRUCTIONS)
+        return self._locate(
+            png_bytes,
+            target,
+            _TARGETING_INSTRUCTIONS + _CLICK_CONTROL_INSTRUCTIONS,
+            image_detail="high",
+        )
 
     def refine_control(
         self,
@@ -1230,7 +1235,12 @@ class OpenAIVisualPerceptionProvider:
             # 2-argument invocation: refine_control(crop_bytes, target)
             crop_bytes = full_png_bytes
             target_str = str(crop_png_bytes)
-            return self._locate(crop_bytes, target_str, _REFINEMENT_INSTRUCTIONS + _CLICK_CONTROL_INSTRUCTIONS)
+            return self._locate(
+                crop_bytes,
+                target_str,
+                _REFINEMENT_INSTRUCTIONS + _CLICK_CONTROL_INSTRUCTIONS,
+                image_detail="high",
+            )
 
         crop_bytes = crop_png_bytes if isinstance(crop_png_bytes, (bytes, bytearray)) else bytes(crop_png_bytes)
         target_str = target
@@ -1239,6 +1249,8 @@ class OpenAIVisualPerceptionProvider:
             crop_bytes,
             target_str,
             _CONTEXT_REFINEMENT_INSTRUCTIONS + _CLICK_CONTROL_INSTRUCTIONS,
+            full_detail="auto",
+            crop_detail="high",
         )
 
     def refine_control_with_context(
@@ -1249,7 +1261,13 @@ class OpenAIVisualPerceptionProvider:
     ) -> VisualTargetResult:
         return self.refine_control(full_png_bytes, crop_png_bytes, target)
 
-    def _locate(self, png_bytes: bytes, target: str, instructions: str) -> VisualTargetResult:
+    def _locate(
+        self,
+        png_bytes: bytes,
+        target: str,
+        instructions: str,
+        image_detail: str = "auto",
+    ) -> VisualTargetResult:
         started = perf_counter()
         if not png_bytes or len(png_bytes) > MAX_IMAGE_BYTES:
             raise MalformedVisualPerceptionResponseError(
@@ -1262,6 +1280,8 @@ class OpenAIVisualPerceptionProvider:
         b64_image = base64.b64encode(png_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{b64_image}"
 
+        detail_val = image_detail if image_detail in ("auto", "high", "low") else "auto"
+
         prompt_content = [
             {
                 "type": "input_text",
@@ -1270,7 +1290,7 @@ class OpenAIVisualPerceptionProvider:
             {
                 "type": "input_image",
                 "image_url": data_url,
-                "detail": "auto",
+                "detail": detail_val,
             },
         ]
         try:
@@ -1365,6 +1385,8 @@ class OpenAIVisualPerceptionProvider:
         crop_png_bytes: bytes,
         target: str,
         instructions: str,
+        full_detail: str = "auto",
+        crop_detail: str = "high",
     ) -> VisualTargetResult:
         started = perf_counter()
         if not full_png_bytes or len(full_png_bytes) > MAX_IMAGE_BYTES:
@@ -1385,6 +1407,9 @@ class OpenAIVisualPerceptionProvider:
         b64_crop = base64.b64encode(crop_png_bytes).decode("ascii")
         data_url_crop = f"data:image/png;base64,{b64_crop}"
 
+        f_detail = full_detail if full_detail in ("auto", "high", "low") else "auto"
+        c_detail = crop_detail if crop_detail in ("auto", "high", "low") else "high"
+
         prompt_content = [
             {
                 "type": "input_text",
@@ -1393,12 +1418,12 @@ class OpenAIVisualPerceptionProvider:
             {
                 "type": "input_image",
                 "image_url": data_url_full,
-                "detail": "auto",
+                "detail": f_detail,
             },
             {
                 "type": "input_image",
                 "image_url": data_url_crop,
-                "detail": "auto",
+                "detail": c_detail,
             },
         ]
         try:
