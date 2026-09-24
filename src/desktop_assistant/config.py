@@ -28,6 +28,13 @@ class AppDefinition:
 
 SUPPORTED_APPS: tuple[AppDefinition, ...] = (
     AppDefinition(
+        display_name="Settings",
+        aliases=("settings", "ρυθμίσεις", "systemsettings.exe"),
+        targets=(LaunchTarget("uri", "ms-settings:"),),
+        process_names=("SystemSettings.exe",),
+        can_close=False,
+    ),
+    AppDefinition(
         display_name="Chrome",
         aliases=("chrome", "google chrome"),
         targets=(

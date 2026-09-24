@@ -200,7 +200,7 @@ class VisualClickTool:
                 return self._failure("The visual target could not be prepared.")
             before = self._mouse.get_window_rect(target.handle)
             before.__post_init__()
-            located = self._targeting.locate_prepared(target)
+            located = self._targeting.locate_prepared(target, click_control=True)
             after = self._mouse.get_window_rect(target.handle)
             if before != after or not self._valid_window(target):
                 return self._failure("The window changed during visual targeting. Request the click again.")

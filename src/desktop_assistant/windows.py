@@ -29,6 +29,19 @@ class PreparedWindowFocus:
     executable_name: str
 
 
+def _select_window_candidate(query: str, matches: Sequence[WindowInfo]) -> WindowInfo | str:
+    # Apply visibility preference only within the same matching tier. Never use
+    # a weaker title/process match to replace an exact minimized candidate.
+    candidates = [w for w in matches if not w.minimized] or list(matches)
+    if len(candidates) == 1:
+        return candidates[0]
+    labels = ", ".join(
+        f"'{bounded_window_label(w.title)}' ({bounded_window_label(w.executable_name, 80)})"
+        for w in candidates[:3]
+    )
+    return f"Multiple windows match '{bounded_window_label(query)}': {labels}. Please specify the exact title."
+
+
 def match_window_for_focus(
     query: str,
     windows: Sequence[WindowInfo],
@@ -58,12 +71,9 @@ def match_window_for_focus(
                 if w.executable_name.casefold() in trusted_processes
             ]
             if trusted_matches:
-                return trusted_matches[0]
+                return _select_window_candidate(query, trusted_matches)
 
-        candidates = ", ".join(
-            f"'{bounded_window_label(w.title)}' ({bounded_window_label(w.executable_name, 80)})" for w in exact_title_matches[:3]
-        )
-        return f"Multiple windows match '{bounded_window_label(query)}': {candidates}. Please specify the exact title."
+        return _select_window_candidate(query, exact_title_matches)
 
     # 2. AppCatalog aliases such as "VS Code", "Chrome", "Spotify", "Notepad"
     # and match their trusted process_names
@@ -74,16 +84,14 @@ def match_window_for_focus(
             w for w in windows if w.executable_name.casefold() in trusted_processes
         ]
         if app_windows:
-            # Choose the first/top-most visible matching window deterministically
-            return app_windows[0]
+            return _select_window_candidate(query, app_windows)
 
     # 3. Case-insensitive title substring matching
     sub_matches = [w for w in windows if q_case in w.title.casefold()]
     if len(sub_matches) == 1:
         return sub_matches[0]
     elif len(sub_matches) > 1:
-        candidates = ", ".join(f"'{bounded_window_label(w.title)}'" for w in sub_matches[:3])
-        return f"Multiple windows match '{bounded_window_label(query)}': {candidates}. Please specify the exact title."
+        return _select_window_candidate(query, sub_matches)
 
     # 4. Optionally exact executable stem matching (e.g. query "spotify" matches "spotify.exe")
     stem_matches = [
@@ -93,8 +101,7 @@ def match_window_for_focus(
     if len(stem_matches) == 1:
         return stem_matches[0]
     elif len(stem_matches) > 1:
-        candidates = ", ".join(f"'{bounded_window_label(w.title)}'" for w in stem_matches[:3])
-        return f"Multiple windows match '{bounded_window_label(query)}': {candidates}. Please specify the exact title."
+        return _select_window_candidate(query, stem_matches)
 
     return f"No matching window found for '{bounded_window_label(query)}'."
 

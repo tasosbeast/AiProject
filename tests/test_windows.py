@@ -139,14 +139,14 @@ def test_match_window_duplicate_exact_title_trusted_app_catalog_resolves() -> No
     assert matched.handle == 201
     assert matched.executable_name == "notepad.exe"
 
-    # Both windows are trusted processes -> deterministic choice of top-most
+    # Multiple visible trusted matches must remain ambiguous.
     w3 = WindowInfo(handle=203, process_id=30, title="Notepad", executable_name="notepad.exe")
     w4 = WindowInfo(handle=204, process_id=40, title="Notepad", executable_name="notepad.exe")
     windows_multi = (w3, w4)
 
     matched_multi = match_window_for_focus("Notepad", windows_multi, catalog)
-    assert isinstance(matched_multi, WindowInfo)
-    assert matched_multi.handle == 203
+    assert isinstance(matched_multi, str)
+    assert "Multiple windows" in matched_multi
 
 
 def test_match_window_app_catalog_alias_single() -> None:
@@ -167,16 +167,16 @@ def test_match_window_app_catalog_alias_single() -> None:
     assert matched.executable_name == "Code.exe"
 
 
-def test_match_window_app_catalog_alias_deterministic_choice_multiple_windows() -> None:
+def test_match_window_app_catalog_alias_multiple_visible_windows_is_ambiguous() -> None:
     catalog = AppCatalog()
     w1 = WindowInfo(handle=201, process_id=30, title="AiProject - Visual Studio Code", executable_name="Code.exe")
     w2 = WindowInfo(handle=202, process_id=30, title="OtherProject - Visual Studio Code", executable_name="Code.exe")
     windows = (w1, w2)
 
-    # First / top-most window is chosen deterministically
+    # Window ordering must not conceal ambiguity.
     matched = match_window_for_focus("VS Code", windows, catalog)
-    assert isinstance(matched, WindowInfo)
-    assert matched.handle == 201
+    assert isinstance(matched, str)
+    assert "Multiple windows" in matched
 
 
 def test_match_window_title_substring_single() -> None:

@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 _INSTRUCTIONS = """You route one user request for a small Windows desktop assistant.
 
+Preserve explicit user-visible window/application names in query as faithfully as practical.
+Do not translate an explicitly named query into another language or invent localized translations.
+User: 'Τι βλέπεις στις Ρυθμίσεις;'
+Action: visual_inspect with query: Ρυθμίσεις, goal: Describe what is visible.
+Keep explicit Chrome, VS Code, File Explorer, Notepad and Settings unchanged.
+User: 'What do you see in Settings?'
+Action: visual_inspect with query: Settings, goal: Describe what is visible.
+
 SINGLE ACTION:
 If the user requests exactly one supported computer action, call that individual tool.
 For volume adjustments, use volume_control with action: volume_up, volume_down, or mute_toggle.

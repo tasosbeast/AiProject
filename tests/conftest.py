@@ -346,6 +346,12 @@ class FakeWindowCaptureBackend:
 
 
 class FakeVisualPerceptionProvider:
+    def locate_control(self, png_bytes, target):
+        return self.locate_target(png_bytes, target)
+
+    def refine_control(self, png_bytes, target):
+        return self.refine_target(png_bytes, target)
+
     def __init__(
         self,
         observation: str = "A visible window with buttons and text.",
