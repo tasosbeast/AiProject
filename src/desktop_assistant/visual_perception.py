@@ -136,8 +136,18 @@ or screen/desktop. No action was performed."""
 
 _CLICK_CONTROL_INSTRUCTIONS = """
 The purpose is click_control: always locate an INTERACTIVE UI CONTROL by function.
-Incidental matching text is never valid evidence for this click target.
-If no interactive control is visibly identifiable, return not_found or ambiguous.
+- Search the entire visible application window for the requested interactive control.
+- Do not assume a control must appear in its conventional or default OS/app location.
+- Browser and app controls may appear in horizontal toolbars, vertical sidebars, side rails, compact navigation strips, or custom tab layouts.
+- "New Tab" does not imply or require that the "+" must be directly beside or adjacent to a horizontal tab strip.
+- If a visible interactive "+" exists in application chrome/navigation and visual context supports that it performs the requested New Tab function, it is a valid candidate even if it is vertically positioned.
+- Position alone must never be used to reject a semantically matching interactive control.
+- Distinguish application chrome/navigation controls from webpage/document/chat content.
+- Incidental matching text or "+" characters inside page, document, or chat content are never valid controls.
+- Use visible UI structure and function, not learned assumptions about where Chrome or another application normally puts a control.
+- If exactly one plausible interactive control matches, return status found.
+- If multiple plausible controls remain, return status ambiguous.
+- If no interactive control is visibly identifiable, return not_found or ambiguous.
 No action was performed."""
 
 _CONTEXT_REFINEMENT_INSTRUCTIONS = _TARGETING_INSTRUCTIONS + """

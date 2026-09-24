@@ -97,3 +97,51 @@ def test_real_provider_prompts_reject_incidental_text_without_extra_calls(tool_n
             assert phrase in instructions
         assert ("purpose is click_control" in instructions) == (tool_name == "visual_click")
         assert call["store"] is False and "tools" not in call
+
+
+def test_click_control_instructions_remove_layout_assumptions():
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(output_text=json.dumps({"status": "found", "label": "+",
+            "description": "New Tab control", "bounds": {"left": 20, "top": 50, "right": 40, "bottom": 70},
+            "confidence": 0.95, "reason": None}))
+
+    vision = OpenAIVisualPerceptionProvider(api_key="fake", model="fake",
+        client=SimpleNamespace(responses=SimpleNamespace(create=create)))
+    fake_png = b"fake_png_data"
+
+    vision.locate_control(fake_png, "New Tab")
+    assert len(calls) == 1
+    instructions = calls[0]["instructions"]
+
+    # 1. Require searching the entire application window
+    assert "Search the entire visible application window" in instructions
+
+    # 2. Allow horizontal OR vertical application chrome/navigation
+    assert "horizontal toolbars" in instructions
+    assert "vertical sidebars" in instructions
+    assert "side rails" in instructions
+
+    # 3. State that New Tab does not require adjacency to a horizontal tab strip
+    assert '"New Tab" does not imply or require that the "+" must be directly beside or adjacent to a horizontal tab strip' in instructions
+    assert "it is a valid candidate even if it is vertically positioned" in instructions
+
+    # 4. Prohibit rejecting a control based only on unconventional position
+    assert "Position alone must never be used to reject a semantically matching interactive control" in instructions
+    assert "Do not assume a control must appear in its conventional or default OS/app location" in instructions
+
+    # 5. Distinguish app chrome controls from incidental page/document content
+    assert "Distinguish application chrome/navigation controls from webpage/document/chat content" in instructions
+    assert "Incidental matching text or \"+\" characters inside page, document, or chat content are never valid controls" in instructions
+
+    # Also verified in context refinement pass
+    calls.clear()
+    vision.refine_control(fake_png, fake_png, "New Tab")
+    assert len(calls) == 1
+    refine_instructions = calls[0]["instructions"]
+    assert "Search the entire visible application window" in refine_instructions
+    assert "Position alone must never be used to reject a semantically matching interactive control" in refine_instructions
+    assert '"New Tab" does not imply or require that the "+" must be directly beside or adjacent to a horizontal tab strip' in refine_instructions
+
