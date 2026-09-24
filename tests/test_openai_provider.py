@@ -537,9 +537,28 @@ def test_plan_tool_schema_structure() -> None:
     assert actions["minItems"] == 2
     assert actions["maxItems"] == 3
     variants = actions["items"]["anyOf"]
-    assert len(variants) == len(TEST_TOOL_SCHEMAS)
+    expected_tools = [tool["name"] for tool in TEST_TOOL_SCHEMAS if tool["name"] != "visual_inspect"]
+    assert len(variants) == len(expected_tools)
     tool_names = [v["properties"]["tool_name"]["enum"][0] for v in variants]
-    assert tool_names == [tool["name"] for tool in TEST_TOOL_SCHEMAS]
+    assert tool_names == expected_tools
+    assert "visual_inspect" not in tool_names
+
+
+def test_malformed_plan_containing_visual_inspect_rejected() -> None:
+    plan_with_vision = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"visual_inspect","arguments":{"query":"Spotify"}}'
+                ']}',
+            )
+        ]
+    )
+    with pytest.raises(MalformedIntentResponseError) as exc_info:
+        make_provider(FakeClient(plan_with_vision)).resolve("Open Spotify and inspect visually")
+    assert "visual_inspect" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(

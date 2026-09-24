@@ -316,6 +316,12 @@ _CONTROL_SCHEMAS: tuple[dict[str, Any], ...] = (
 def build_plan_tool_schema(tool_schemas: Sequence[dict[str, Any]]) -> dict[str, Any]:
     action_variants: list[dict[str, Any]] = []
     for tool in tool_schemas:
+        if tool.get("name") in (
+            "propose_action_plan",
+            "observe_ui_then_decide",
+            "visual_inspect",
+        ):
+            continue
         parameters = deepcopy(tool.get("parameters", {}))
         if not isinstance(parameters, dict):
             parameters = {
@@ -406,7 +412,10 @@ class OpenAIIntentProvider:
                     if "enum" in prop:
                         prop["enum"].append(None)
             parameters["required"] = list(parameters.get("properties", {}))
-        self._plan_schema = build_plan_tool_schema(wire_schemas)
+        plan_tool_schemas = [
+            t for t in wire_schemas if t.get("name") not in ("visual_inspect",)
+        ]
+        self._plan_schema = build_plan_tool_schema(plan_tool_schemas)
         self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, *_CONTROL_SCHEMAS]
         self._observation_tools = [
             t for t in wire_schemas if t.get("name") not in ("ui_inspect", "visual_inspect")
@@ -596,6 +605,9 @@ class OpenAIIntentProvider:
             item_arguments = item.get("arguments")
             if not isinstance(item_arguments, dict):
                 raise MalformedIntentResponseError(f"Plan action {idx + 1} arguments must be an object.")
+
+            if tool_name in ("visual_inspect", "observe_ui_then_decide", "propose_action_plan"):
+                raise MalformedIntentResponseError(f"Plan tool '{tool_name}' is not allowed in an action plan.")
 
             if self._registered_tools:
                 if tool_name not in self._registered_tools:

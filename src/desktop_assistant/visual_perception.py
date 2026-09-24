@@ -29,6 +29,8 @@ from desktop_assistant.windows import bounded_window_label, match_window_for_foc
 
 MAX_GOAL_CHARS = 500
 MAX_OBSERVATION_CHARS = 3000
+MAX_SOURCE_PIXELS = 20_000_000
+MAX_SOURCE_BYTES = 80_000_000  # 20M pixels * 4 bytes
 MAX_IMAGE_LONG_EDGE = 1600
 MAX_IMAGE_PIXELS = 2_000_000
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB
@@ -36,6 +38,7 @@ MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB
 PW_RENDERFULLCONTENT = 2
 DIB_RGB_COLORS = 0
 BI_RGB = 0
+HGDI_ERROR = ctypes.c_void_p(-1).value
 
 _VISION_INSTRUCTIONS = """You are performing read-only screen perception for a desktop assistant.
 - This is read-only screen perception.
@@ -81,6 +84,162 @@ class WindowCapture:
     height: int
 
 
+class Win32CaptureApi(Protocol):
+    def get_window_rect(self, handle: int) -> tuple[int, int, int, int] | None: ...
+    def get_window_dc(self, handle: int) -> int | None: ...
+    def release_dc(self, handle: int, hdc: int) -> int: ...
+    def create_compatible_dc(self, hdc: int) -> int | None: ...
+    def create_compatible_bitmap(self, hdc: int, width: int, height: int) -> int | None: ...
+    def select_object(self, hdc: int, hgdiobj: int) -> int | None: ...
+    def print_window(self, handle: int, hdc: int, flags: int) -> bool: ...
+    def get_di_bits(
+        self,
+        hdc: int,
+        hbm: int,
+        start_scan: int,
+        scan_lines: int,
+        bits: Any,
+        bmi: Any,
+        usage: int,
+    ) -> int: ...
+    def delete_object(self, hgdiobj: int) -> bool: ...
+    def delete_dc(self, hdc: int) -> bool: ...
+
+
+class _Win32GdiCaptureApi:
+    """Explicit Win32/GDI ABI declarations for window capture."""
+
+    def __init__(
+        self,
+        user32: Any | None = None,
+        gdi32: Any | None = None,
+    ) -> None:
+        if os.name != "nt" and (user32 is None or gdi32 is None):
+            raise RuntimeError("WindowsWindowCaptureBackend is only supported on Windows.")
+
+        self.user32 = user32 or ctypes.WinDLL("user32", use_last_error=True)
+        self.gdi32 = gdi32 or ctypes.WinDLL("gdi32", use_last_error=True)
+
+        self._configure_signatures()
+
+    def _configure_signatures(self) -> None:
+        self.user32.GetWindowRect.argtypes = (wintypes.HWND, wintypes.LPRECT)
+        self.user32.GetWindowRect.restype = wintypes.BOOL
+
+        self.user32.GetWindowDC.argtypes = (wintypes.HWND,)
+        self.user32.GetWindowDC.restype = wintypes.HDC
+
+        self.user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
+        self.user32.ReleaseDC.restype = ctypes.c_int
+
+        self.user32.PrintWindow.argtypes = (wintypes.HWND, wintypes.HDC, wintypes.UINT)
+        self.user32.PrintWindow.restype = wintypes.BOOL
+
+        self.gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
+        self.gdi32.CreateCompatibleDC.restype = wintypes.HDC
+
+        self.gdi32.CreateCompatibleBitmap.argtypes = (wintypes.HDC, ctypes.c_int, ctypes.c_int)
+        self.gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+
+        self.gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HGDIOBJ)
+        self.gdi32.SelectObject.restype = wintypes.HGDIOBJ
+
+        self.gdi32.GetDIBits.argtypes = (
+            wintypes.HDC,
+            wintypes.HBITMAP,
+            wintypes.UINT,
+            wintypes.UINT,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.UINT,
+        )
+        self.gdi32.GetDIBits.restype = ctypes.c_int
+
+        self.gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+        self.gdi32.DeleteObject.restype = wintypes.BOOL
+
+        self.gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+        self.gdi32.DeleteDC.restype = wintypes.BOOL
+
+    def get_window_rect(self, handle: int) -> tuple[int, int, int, int] | None:
+        rect = wintypes.RECT()
+        if not self.user32.GetWindowRect(wintypes.HWND(handle), ctypes.byref(rect)):
+            return None
+        return (rect.left, rect.top, rect.right, rect.bottom)
+
+    def get_window_dc(self, handle: int) -> int | None:
+        hdc = self.user32.GetWindowDC(wintypes.HWND(handle))
+        if not hdc or hdc == HGDI_ERROR:
+            return None
+        return hdc
+
+    def release_dc(self, handle: int, hdc: int) -> int:
+        if not hdc:
+            return 0
+        return self.user32.ReleaseDC(wintypes.HWND(handle), wintypes.HDC(hdc))
+
+    def create_compatible_dc(self, hdc: int) -> int | None:
+        if not hdc:
+            return None
+        hdc_mem = self.gdi32.CreateCompatibleDC(wintypes.HDC(hdc))
+        if not hdc_mem or hdc_mem == HGDI_ERROR:
+            return None
+        return hdc_mem
+
+    def create_compatible_bitmap(self, hdc: int, width: int, height: int) -> int | None:
+        if not hdc:
+            return None
+        hbm = self.gdi32.CreateCompatibleBitmap(wintypes.HDC(hdc), width, height)
+        if not hbm or hbm == HGDI_ERROR:
+            return None
+        return hbm
+
+    def select_object(self, hdc: int, hgdiobj: int) -> int | None:
+        if not hdc or not hgdiobj:
+            return None
+        old_obj = self.gdi32.SelectObject(wintypes.HDC(hdc), wintypes.HGDIOBJ(hgdiobj))
+        if old_obj is None or old_obj == 0 or old_obj == HGDI_ERROR:
+            return None
+        return old_obj
+
+    def print_window(self, handle: int, hdc: int, flags: int) -> bool:
+        if not handle or not hdc:
+            return False
+        return bool(self.user32.PrintWindow(wintypes.HWND(handle), wintypes.HDC(hdc), flags))
+
+    def get_di_bits(
+        self,
+        hdc: int,
+        hbm: int,
+        start_scan: int,
+        scan_lines: int,
+        bits: Any,
+        bmi: Any,
+        usage: int,
+    ) -> int:
+        if not hdc or not hbm:
+            return 0
+        return self.gdi32.GetDIBits(
+            wintypes.HDC(hdc),
+            wintypes.HBITMAP(hbm),
+            start_scan,
+            scan_lines,
+            bits,
+            bmi,
+            usage,
+        )
+
+    def delete_object(self, hgdiobj: int) -> bool:
+        if not hgdiobj or hgdiobj == HGDI_ERROR:
+            return False
+        return bool(self.gdi32.DeleteObject(wintypes.HGDIOBJ(hgdiobj)))
+
+    def delete_dc(self, hdc: int) -> bool:
+        if not hdc or hdc == HGDI_ERROR:
+            return False
+        return bool(self.gdi32.DeleteDC(wintypes.HDC(hdc)))
+
+
 class WindowCaptureBackend(Protocol):
     def capture_window(self, handle: int) -> WindowCapture | None: ...
 
@@ -113,43 +272,75 @@ class PreparedVisualTarget:
 class WindowsWindowCaptureBackend:
     """Capture an explicit window via Win32 PrintWindow and encode to bounded PNG in-memory."""
 
-    def capture_window(self, handle: int) -> WindowCapture | None:
+    def __init__(self, api: Win32CaptureApi | None = None) -> None:
+        self._api = api
+
+    def _get_api(self) -> Win32CaptureApi:
+        if self._api is not None:
+            return self._api
         if os.name != "nt":
             raise RuntimeError("WindowsWindowCaptureBackend is only supported on Windows.")
+        return _Win32GdiCaptureApi()
 
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-
-        rect = wintypes.RECT()
-        if not user32.GetWindowRect(handle, ctypes.byref(rect)):
+    def capture_window(self, handle: int) -> WindowCapture | None:
+        if not handle or handle <= 0 or (isinstance(handle, int) and handle == HGDI_ERROR):
             return None
 
-        width = rect.right - rect.left
-        height = rect.bottom - rect.top
+        api = self._get_api()
+
+        rect = api.get_window_rect(handle)
+        if rect is None:
+            return None
+
+        left, top, right, bottom = rect
+        width = right - left
+        height = bottom - top
 
         if width <= 0 or height <= 0 or width > 10000 or height > 10000:
             return None
 
-        hdc_window = user32.GetWindowDC(handle)
+        source_pixels = width * height
+        source_bytes = source_pixels * 4
+        if source_pixels > MAX_SOURCE_PIXELS or source_bytes > MAX_SOURCE_BYTES:
+            logger.warning(
+                "Window %dx%d exceeds maximum source capture limits (%d pixels / %d bytes).",
+                width,
+                height,
+                MAX_SOURCE_PIXELS,
+                MAX_SOURCE_BYTES,
+            )
+            return None
+
+        hdc_window = api.get_window_dc(handle)
         if not hdc_window:
             return None
 
         hdc_mem = None
         hbm = None
         old_bm = None
+        is_selected = False
         try:
-            hdc_mem = gdi32.CreateCompatibleDC(hdc_window)
+            hdc_mem = api.create_compatible_dc(hdc_window)
             if not hdc_mem:
                 return None
 
-            hbm = gdi32.CreateCompatibleBitmap(hdc_window, width, height)
+            hbm = api.create_compatible_bitmap(hdc_window, width, height)
             if not hbm:
                 return None
 
-            old_bm = gdi32.SelectObject(hdc_mem, hbm)
+            old_bm = api.select_object(hdc_mem, hbm)
+            if old_bm is None:
+                return None
+            is_selected = True
 
-            success = user32.PrintWindow(handle, hdc_mem, PW_RENDERFULLCONTENT)
-            if not success:
+            print_success = api.print_window(handle, hdc_mem, PW_RENDERFULLCONTENT)
+            if not print_success:
+                return None
+
+            # Restore old object so hbm is NO LONGER selected into the DC before GetDIBits
+            restored = api.select_object(hdc_mem, old_bm)
+            is_selected = False
+            if restored is None:
                 return None
 
             bmi = BITMAPINFOHEADER()
@@ -160,9 +351,9 @@ class WindowsWindowCaptureBackend:
             bmi.biBitCount = 32
             bmi.biCompression = BI_RGB
 
-            buf = bytearray(width * height * 4)
+            buf = bytearray(source_bytes)
             c_buf = (ctypes.c_char * len(buf)).from_buffer(buf)
-            lines = gdi32.GetDIBits(
+            lines = api.get_di_bits(
                 hdc_mem,
                 hbm,
                 0,
@@ -202,14 +393,24 @@ class WindowsWindowCaptureBackend:
             logger.exception("Window capture failed")
             return None
         finally:
-            if hdc_mem and old_bm:
-                gdi32.SelectObject(hdc_mem, old_bm)
-            if hbm:
-                gdi32.DeleteObject(hbm)
-            if hdc_mem:
-                gdi32.DeleteDC(hdc_mem)
-            if hdc_window:
-                user32.ReleaseDC(handle, hdc_window)
+            try:
+                if is_selected and hdc_mem and old_bm:
+                    api.select_object(hdc_mem, old_bm)
+                    is_selected = False
+            finally:
+                try:
+                    if hbm:
+                        api.delete_object(hbm)
+                        hbm = None
+                finally:
+                    try:
+                        if hdc_mem:
+                            api.delete_dc(hdc_mem)
+                            hdc_mem = None
+                    finally:
+                        if hdc_window:
+                            api.release_dc(handle, hdc_window)
+                            hdc_window = None
 
 
 class OpenAIVisualPerceptionProvider:

@@ -307,6 +307,15 @@ class Assistant:
                 ToolResult(False, "Action plan must contain between 2 and 3 actions.", RiskLevel.SAFE)
             )
 
+        if any(a.tool_name in ("visual_inspect", "observe_ui_then_decide", "propose_action_plan") for a in actions):
+            return self._completed(
+                ToolResult(
+                    False,
+                    "Action plans cannot contain visual inspection or recursive observation.",
+                    RiskLevel.SAFE,
+                )
+            )
+
         prepared_actions: list[PreparedAction] = []
         for i, action in enumerate(actions, start=1):
             prepared = self._tool_registry.prepare(action.tool_name, action.arguments)
