@@ -23,17 +23,28 @@ from desktop_assistant.router import CommandRouter
 from desktop_assistant.visual_perception import (
     MAX_SOURCE_BYTES,
     MAX_SOURCE_PIXELS,
+    MAX_TARGET_CHARS,
+    _TARGETING_INSTRUCTIONS,
     _VISION_INSTRUCTIONS,
+    _VISUAL_TARGET_JSON_SCHEMA,
     MalformedVisualPerceptionResponseError,
+    NormalizedVisualBounds,
     OpenAIVisualPerceptionProvider,
+    PreparedVisualLocationTarget,
     PreparedVisualTarget,
     VisualInspectTool,
     VisualPerceptionUnavailableError,
+    VisualTargetResult,
+    VisualTargetStatus,
+    VisualTargetTool,
     Win32CaptureApi,
     WindowCapture,
     WindowsWindowCaptureBackend,
     _Win32GdiCaptureApi,
+    _parse_and_validate_target_response,
     _sanitize_and_bound_observation,
+    resolve_visual_window,
+    revalidate_visual_target_window,
 )
 from openai import APITimeoutError, AuthenticationError, RateLimitError
 
@@ -714,5 +725,591 @@ def test_win32_restore_failure_retried_in_cleanup_success() -> None:
     assert fake_api.deleted_objects == [3001]
     assert fake_api.deleted_dcs == [2001]
     assert fake_api.released_dcs == [(101, 1001)]
+
+
+# ==================================================
+# Visual Targeting v1 Tests
+# ==================================================
+
+
+def test_visual_bounds_validation() -> None:
+    # Valid bounds
+    bounds = NormalizedVisualBounds(left=0, top=0, right=1000, bottom=1000)
+    assert bounds.left == 0
+    assert bounds.top == 0
+    assert bounds.right == 1000
+    assert bounds.bottom == 1000
+    assert bounds.to_dict() == {"left": 0, "top": 0, "right": 1000, "bottom": 1000}
+
+    # Range errors
+    with pytest.raises(ValueError, match="left coordinate must be in range 0..1000"):
+        NormalizedVisualBounds(left=-1, top=0, right=100, bottom=100)
+    with pytest.raises(ValueError, match="bottom coordinate must be in range 0..1000"):
+        NormalizedVisualBounds(left=0, top=0, right=100, bottom=1001)
+
+    # Geometry errors: left >= right, top >= bottom
+    with pytest.raises(ValueError, match="left .* must be strictly less than right"):
+        NormalizedVisualBounds(left=500, top=0, right=500, bottom=100)
+    with pytest.raises(ValueError, match="left .* must be strictly less than right"):
+        NormalizedVisualBounds(left=600, top=0, right=500, bottom=100)
+    with pytest.raises(ValueError, match="top .* must be strictly less than bottom"):
+        NormalizedVisualBounds(left=0, top=500, right=100, bottom=500)
+    with pytest.raises(ValueError, match="top .* must be strictly less than bottom"):
+        NormalizedVisualBounds(left=0, top=600, right=100, bottom=500)
+
+    # Non-integer errors
+    with pytest.raises(ValueError, match="must be an integer"):
+        NormalizedVisualBounds(left=10.5, top=0, right=100, bottom=100)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be an integer"):
+        NormalizedVisualBounds(left=True, top=0, right=100, bottom=100)  # type: ignore[arg-type]
+
+
+def test_visual_target_result_validation() -> None:
+    bounds = NormalizedVisualBounds(left=100, top=200, right=300, bottom=400)
+
+    # Valid FOUND
+    res = VisualTargetResult(
+        status=VisualTargetStatus.FOUND,
+        label="Search",
+        description="Search input in sidebar",
+        bounds=bounds,
+        confidence=0.95,
+    )
+    assert res.status == VisualTargetStatus.FOUND
+    assert res.bounds == bounds
+
+    # FOUND missing bounds
+    with pytest.raises(ValueError, match="requires valid NormalizedVisualBounds"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="Search",
+            description="Search input",
+            bounds=None,
+            confidence=0.9,
+        )
+
+    # FOUND missing label or description
+    with pytest.raises(ValueError, match="requires a non-empty label"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="",
+            description="Search input",
+            bounds=bounds,
+            confidence=0.9,
+        )
+    with pytest.raises(ValueError, match="requires a non-empty description"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="Search",
+            description="  ",
+            bounds=bounds,
+            confidence=0.9,
+        )
+
+    # FOUND confidence validation: NaN, Inf, out of range, bool
+    with pytest.raises(ValueError, match="finite float in \\[0.0, 1.0\\]"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="Search",
+            description="Search input",
+            bounds=bounds,
+            confidence=float("nan"),
+        )
+    with pytest.raises(ValueError, match="finite float in \\[0.0, 1.0\\]"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="Search",
+            description="Search input",
+            bounds=bounds,
+            confidence=float("inf"),
+        )
+    with pytest.raises(ValueError, match="finite float in \\[0.0, 1.0\\]"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="Search",
+            description="Search input",
+            bounds=bounds,
+            confidence=1.5,
+        )
+    with pytest.raises(ValueError, match="numeric confidence"):
+        VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label="Search",
+            description="Search input",
+            bounds=bounds,
+            confidence=True,  # type: ignore[arg-type]
+        )
+
+    # NOT_FOUND and AMBIGUOUS must not have bounds
+    with pytest.raises(ValueError, match="must not have bounds"):
+        VisualTargetResult(
+            status=VisualTargetStatus.NOT_FOUND,
+            bounds=bounds,
+            reason="Not found",
+        )
+    with pytest.raises(ValueError, match="must not have bounds"):
+        VisualTargetResult(
+            status=VisualTargetStatus.AMBIGUOUS,
+            bounds=bounds,
+            reason="Ambiguous",
+        )
+
+
+def test_parse_and_validate_target_response() -> None:
+    # Valid found
+    found_json = (
+        '{"status":"found","label":"Search","description":"Activity bar search icon",'
+        '"bounds":{"left":10,"top":20,"right":50,"bottom":60},"confidence":0.98,"reason":null}'
+    )
+    result = _parse_and_validate_target_response(found_json)
+    assert result.status == VisualTargetStatus.FOUND
+    assert result.label == "Search"
+    assert result.description == "Activity bar search icon"
+    assert result.bounds == NormalizedVisualBounds(left=10, top=20, right=50, bottom=60)
+    assert result.confidence == 0.98
+
+    # Valid not_found
+    nf_json = '{"status":"not_found","label":null,"description":null,"bounds":null,"confidence":null,"reason":"No search icon visible."}'
+    result_nf = _parse_and_validate_target_response(nf_json)
+    assert result_nf.status == VisualTargetStatus.NOT_FOUND
+    assert result_nf.bounds is None
+    assert result_nf.reason == "No search icon visible."
+
+    # Valid ambiguous
+    amb_json = '{"status":"ambiguous","label":null,"description":null,"bounds":null,"confidence":null,"reason":"Three matching search icons found."}'
+    result_amb = _parse_and_validate_target_response(amb_json)
+    assert result_amb.status == VisualTargetStatus.AMBIGUOUS
+    assert result_amb.bounds is None
+    assert result_amb.reason == "Three matching search icons found."
+
+    # Malformed: empty / invalid JSON / not dict
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response("")
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response("not a json")
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response("[]")
+
+    # Malformed: unknown status
+    with pytest.raises(MalformedVisualPerceptionResponseError, match="Unknown visual target status"):
+        _parse_and_validate_target_response('{"status":"maybe"}')
+
+    # Malformed: found with invalid bounds
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response('{"status":"found","label":"A","description":"B","bounds":null,"confidence":0.9}')
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response('{"status":"found","label":"A","description":"B","bounds":{"left":"0","top":0,"right":10,"bottom":10},"confidence":0.9}')
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response('{"status":"found","label":"A","description":"B","bounds":{"left":10.5,"top":0,"right":100,"bottom":100},"confidence":0.9}')
+    with pytest.raises(MalformedVisualPerceptionResponseError):
+        _parse_and_validate_target_response('{"status":"found","label":"A","description":"B","bounds":{"left":100,"top":0,"right":50,"bottom":100},"confidence":0.9}')
+
+    # Malformed: not_found or ambiguous with bounds
+    with pytest.raises(MalformedVisualPerceptionResponseError, match="must not include bounds"):
+        _parse_and_validate_target_response('{"status":"not_found","bounds":{"left":0,"top":0,"right":10,"bottom":10},"reason":"x"}')
+    with pytest.raises(MalformedVisualPerceptionResponseError, match="must not include bounds"):
+        _parse_and_validate_target_response('{"status":"ambiguous","bounds":{"left":0,"top":0,"right":10,"bottom":10},"reason":"x"}')
+
+
+def test_visual_target_tool_exact_window_resolution_and_preparation() -> None:
+    controller = FakeWindowController([TARGET, TARGET_NOTEPAD])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+    provider = FakeVisualPerceptionProvider()
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    prep = tool.prepare({"query": "VS Code", "target": "Search icon"})
+    assert isinstance(prep, ToolPreparation)
+    target = prep.execution_value
+    assert isinstance(target, PreparedVisualLocationTarget)
+    assert target.handle == 101
+    assert target.process_id == 42
+    assert target.title == "Visual Studio Code - AiProject"
+    assert target.executable_name == "Code.exe"
+    assert target.target == "Search icon"
+
+    # Target bounding
+    long_target = "x" * 500
+    prep_long = tool.prepare({"query": "VS Code", "target": long_target})
+    assert isinstance(prep_long, ToolPreparation)
+    assert len(prep_long.execution_value.target) == MAX_TARGET_CHARS
+
+
+def test_visual_target_tool_missing_and_ambiguous_window() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+    provider = FakeVisualPerceptionProvider()
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    # Empty query
+    res = tool.prepare({"query": "", "target": "Search"})
+    assert isinstance(res, ToolResult)
+    assert not res.success
+    assert "Window query must not be empty" in res.message
+
+    # Empty target
+    res_no_tgt = tool.prepare({"query": "VS Code", "target": ""})
+    assert isinstance(res_no_tgt, ToolResult)
+    assert not res_no_tgt.success
+    assert "Target description must not be empty" in res_no_tgt.message
+
+    # Missing window
+    res_miss = tool.prepare({"query": "Firefox", "target": "Search"})
+    assert isinstance(res_miss, ToolResult)
+    assert not res_miss.success
+    assert "No matching window found" in res_miss.message
+
+    # Ambiguous window
+    w1 = WindowInfo(201, 50, "App - Window 1", "app.exe", False)
+    w2 = WindowInfo(202, 51, "App - Window 2", "app.exe", False)
+    controller_amb = FakeWindowController([w1, w2])
+    tool_amb = VisualTargetTool(controller_amb, catalog, backend, provider)
+    res_amb = tool_amb.prepare({"query": "App", "target": "Search"})
+    assert isinstance(res_amb, ToolResult)
+    assert not res_amb.success
+    assert "Multiple windows match" in res_amb.message
+
+
+def test_visual_target_tool_minimized_window_rejected() -> None:
+    minimized_target = WindowInfo(101, 42, "Visual Studio Code - AiProject", "Code.exe", True)
+    controller = FakeWindowController([minimized_target])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+    provider = FakeVisualPerceptionProvider()
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    res = tool.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(res, ToolResult)
+    assert not res.success
+    assert "is minimized and cannot be visually targeted" in res.message
+
+
+def test_visual_target_tool_stale_before_capture_aborts() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+    provider = FakeVisualPerceptionProvider()
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    prep = tool.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep, ToolPreparation)
+
+    # Window closed before execute
+    controller.windows = []
+    res = tool.execute(prep.execution_value)
+    assert not res.success
+    assert "changed or is no longer available" in res.message
+    assert len(backend.calls) == 0
+    assert len(provider.target_calls) == 0
+
+
+def test_visual_target_tool_stale_after_capture_aborts_without_calling_provider() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+    provider = FakeVisualPerceptionProvider()
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    prep = tool.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep, ToolPreparation)
+
+    # Hook capture to simulate window closing or title changing immediately after capture
+    original_capture = backend.capture_window
+
+    def capture_and_invalidate(handle: int) -> WindowCapture | None:
+        cap = original_capture(handle)
+        controller.windows = []
+        return cap
+
+    backend.capture_window = capture_and_invalidate  # type: ignore[assignment]
+
+    res = tool.execute(prep.execution_value)
+    assert not res.success
+    assert "changed or is no longer available" in res.message
+    assert len(backend.calls) == 1
+    assert len(provider.target_calls) == 0
+
+
+def test_visual_target_tool_capture_failure_aborts_safely() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend(failed=True)
+    provider = FakeVisualPerceptionProvider()
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    prep = tool.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep, ToolPreparation)
+
+    res = tool.execute(prep.execution_value)
+    assert not res.success
+    assert "Failed to capture window" in res.message
+    assert len(backend.calls) == 1
+    assert len(provider.target_calls) == 0
+
+
+def test_visual_target_tool_found_success_and_safety_invariants() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+    found_result = VisualTargetResult(
+        status=VisualTargetStatus.FOUND,
+        label="Search",
+        description="far-left Activity Bar, second icon from the top",
+        bounds=NormalizedVisualBounds(left=12, top=85, right=48, bottom=125),
+        confidence=0.97,
+    )
+    provider = FakeVisualPerceptionProvider(target_result=found_result)
+    tool = VisualTargetTool(controller, catalog, backend, provider)
+
+    prep = tool.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep, ToolPreparation)
+
+    res = tool.execute(prep.execution_value)
+    assert res.success
+    assert res.risk_level == RiskLevel.SAFE
+    assert "Found 'Search' — far-left Activity Bar, second icon from the top" in res.message
+    assert len(backend.calls) == 1
+    assert len(provider.target_calls) == 1
+
+    details = res.details
+    assert details["title"] == TARGET.title
+    assert details["requested_target"] == "Search"
+    assert details["resolved_label"] == "Search"
+    assert details["confidence"] == 0.97
+    assert details["normalized_bounds"] == {"left": 12, "top": 85, "right": 48, "bottom": 125}
+    assert details["width"] == 800
+    assert details["height"] == 600
+
+    # Ensure NO secrets or identifiers
+    details_str = str(details)
+    assert "101" not in details_str  # handle
+    assert "42" not in details_str   # PID
+    assert "fake_image_bytes" not in details_str
+    assert "base64" not in details_str
+
+
+def test_visual_target_tool_not_found_and_ambiguous_exposes_no_bounds() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+
+    # NOT_FOUND
+    nf_result = VisualTargetResult(
+        status=VisualTargetStatus.NOT_FOUND,
+        reason="No search icon found in editor area.",
+    )
+    provider_nf = FakeVisualPerceptionProvider(target_result=nf_result)
+    tool_nf = VisualTargetTool(controller, catalog, backend, provider_nf)
+
+    prep_nf = tool_nf.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep_nf, ToolPreparation)
+    res_nf = tool_nf.execute(prep_nf.execution_value)
+    assert not res_nf.success
+    assert "Target 'Search' not found in window" in res_nf.message
+    assert "No search icon found in editor area." in res_nf.message
+    assert "normalized_bounds" not in res_nf.details
+    assert "bounds" not in res_nf.details
+
+    # AMBIGUOUS
+    amb_result = VisualTargetResult(
+        status=VisualTargetStatus.AMBIGUOUS,
+        reason="Multiple Search icons found in the Activity Bar and Editor tab.",
+    )
+    provider_amb = FakeVisualPerceptionProvider(target_result=amb_result)
+    tool_amb = VisualTargetTool(controller, catalog, backend, provider_amb)
+
+    prep_amb = tool_amb.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep_amb, ToolPreparation)
+    res_amb = tool_amb.execute(prep_amb.execution_value)
+    assert not res_amb.success
+    assert "Visual target 'Search' in window" in res_amb.message
+    assert "is ambiguous" in res_amb.message
+    assert "normalized_bounds" not in res_amb.details
+    assert "bounds" not in res_amb.details
+
+
+def test_visual_target_tool_provider_errors_return_safe_failure() -> None:
+    controller = FakeWindowController([TARGET])
+    catalog = AppCatalog()
+    backend = FakeWindowCaptureBackend()
+
+    # Provider missing
+    tool_no_provider = VisualTargetTool(controller, catalog, backend, None)
+    prep = tool_no_provider.prepare({"query": "VS Code", "target": "Search"})
+    assert isinstance(prep, ToolPreparation)
+    res = tool_no_provider.execute(prep.execution_value)
+    assert not res.success
+    assert "Visual targeting is unavailable because no AI provider is configured" in res.message
+
+    # Unavailable error
+    p_unavail = FakeVisualPerceptionProvider(error=VisualPerceptionUnavailableError("API down"))
+    tool_unavail = VisualTargetTool(controller, catalog, backend, p_unavail)
+    res_unavail = tool_unavail.execute(prep.execution_value)
+    assert not res_unavail.success
+    assert "temporarily unavailable" in res_unavail.message
+
+    # Malformed error
+    p_malformed = FakeVisualPerceptionProvider(error=MalformedVisualPerceptionResponseError("bad json"))
+    tool_malformed = VisualTargetTool(controller, catalog, backend, p_malformed)
+    res_malformed = tool_malformed.execute(prep.execution_value)
+    assert not res_malformed.success
+    assert "response could not be processed" in res_malformed.message
+
+    # General error
+    p_general = FakeVisualPerceptionProvider(error=RuntimeError("unexpected"))
+    tool_general = VisualTargetTool(controller, catalog, backend, p_general)
+    res_general = tool_general.execute(prep.execution_value)
+    assert not res_general.success
+    assert "Visual targeting failed" in res_general.message
+
+
+def test_openai_visual_target_provider_request_format_and_parsing() -> None:
+    valid_json = (
+        '{"status":"found","label":"Search","description":"Activity Bar Search",'
+        '"bounds":{"left":50,"top":100,"right":80,"bottom":130},"confidence":0.99,"reason":null}'
+    )
+    fake_response = SimpleNamespace(output_text=valid_json)
+    fake_client = FakeVisionClient(response=fake_response)
+
+    provider = OpenAIVisualPerceptionProvider(
+        api_key="test-key",
+        model="gpt-4o",
+        client=fake_client,
+    )
+
+    fake_png = b"\x89PNG\r\n\x1a\nfake_image"
+    result = provider.locate_target(fake_png, "Search icon")
+    assert result.status == VisualTargetStatus.FOUND
+    assert result.label == "Search"
+    assert result.bounds == NormalizedVisualBounds(left=50, top=100, right=80, bottom=130)
+
+    # Verify request payload
+    assert len(fake_client.responses.calls) == 1
+    call = fake_client.responses.calls[0]
+    assert call["model"] == "gpt-4o"
+    assert call["instructions"] == _TARGETING_INSTRUCTIONS
+    assert "untrusted data" in call["instructions"]
+    assert call["store"] is False
+    assert call["max_output_tokens"] == 700
+    assert "tools" not in call
+
+    # Verify text format structured schema
+    text_cfg = call["text"]
+    assert text_cfg["format"]["type"] == "json_schema"
+    assert text_cfg["format"]["name"] == "visual_target_location"
+    assert text_cfg["format"]["strict"] is True
+    assert text_cfg["format"]["schema"] == _VISUAL_TARGET_JSON_SCHEMA
+
+    # Verify content parts
+    input_item = call["input"][0]
+    assert input_item["role"] == "user"
+    content = input_item["content"]
+    assert len(content) == 2
+    assert content[0]["type"] == "input_text"
+    assert content[0]["text"] == "Search icon"
+    assert content[1]["type"] == "input_image"
+    b64_expected = base64.b64encode(fake_png).decode("ascii")
+    assert content[1]["image_url"] == f"data:image/png;base64,{b64_expected}"
+
+
+def test_openai_visual_target_provider_errors() -> None:
+    timeout_client = FakeVisionClient(error=APITimeoutError("Request timed out"))
+    provider_timeout = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=timeout_client)
+    with pytest.raises(VisualPerceptionUnavailableError, match="timed out"):
+        provider_timeout.locate_target(b"png", "target")
+
+    # Empty response
+    empty_client = FakeVisionClient(response=SimpleNamespace(output_text=""))
+    provider_empty = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=empty_client)
+    with pytest.raises(MalformedVisualPerceptionResponseError, match="response was empty"):
+        provider_empty.locate_target(b"png", "target")
+
+
+def test_assistant_visual_target_end_to_end() -> None:
+    backend = FakeWindowCaptureBackend()
+    found_result = VisualTargetResult(
+        status=VisualTargetStatus.FOUND,
+        label="Search",
+        description="Activity Bar search icon",
+        bounds=NormalizedVisualBounds(left=10, top=50, right=40, bottom=80),
+        confidence=0.96,
+    )
+    vision_provider = FakeVisualPerceptionProvider(target_result=found_result)
+    controller = FakeWindowController([TARGET])
+    registry = make_registry(
+        FakeLauncher(),
+        window_controller=controller,
+        window_capture_backend=backend,
+        visual_perception_provider=vision_provider,
+    )
+    intent_provider = FakeIntentProvider(
+        IntentResult.tool_action("visual_target", {"query": "VS Code", "target": "Search"})
+    )
+    assistant = Assistant(
+        router=CommandRouter(),
+        tool_registry=registry,
+        intent_provider=intent_provider,
+    )
+
+    response = assistant.handle("Βρες το Search στο VS Code.")
+    assert response.success
+    assert "Found 'Search' — Activity Bar search icon" in response.message
+    assert len(backend.calls) == 1
+    assert len(vision_provider.target_calls) == 1
+
+
+def test_action_plan_rejects_visual_target_in_assistant() -> None:
+    backend = FakeWindowCaptureBackend()
+    controller = FakeWindowController([TARGET])
+    registry = make_registry(
+        FakeLauncher(),
+        window_controller=controller,
+        window_capture_backend=backend,
+    )
+    plan = ActionPlan((
+        ToolAction("open_app", {"app_name": "Spotify"}),
+        ToolAction("visual_target", {"query": "VS Code", "target": "Search"}),
+    ))
+    assistant = Assistant(
+        router=CommandRouter(),
+        tool_registry=registry,
+        intent_provider=FakeIntentProvider(IntentResult.action_plan(plan.actions)),
+    )
+
+    response = assistant.handle("Open Spotify and find Search in VS Code")
+    assert not response.success
+    assert "Action plans cannot contain visual inspection" in response.message
+    assert len(backend.calls) == 0
+
+
+def test_observe_ui_then_decide_rejects_visual_target_in_assistant() -> None:
+    controller = FakeWindowController([TARGET])
+    backend = FakeWindowCaptureBackend()
+    registry = make_registry(
+        FakeLauncher(),
+        window_controller=controller,
+        window_capture_backend=backend,
+    )
+
+    class FakeSecondDecisionProvider:
+        def resolve(self, request: str) -> IntentResult:
+            return IntentResult.observe_ui_then_decide("VS Code")
+
+        def decide_from_observation(self, request: str, observation: str) -> IntentResult:
+            return IntentResult.tool_action("visual_target", {"query": "VS Code", "target": "Search"})
+
+    assistant = Assistant(
+        router=CommandRouter(),
+        tool_registry=registry,
+        intent_provider=FakeSecondDecisionProvider(),  # type: ignore[arg-type]
+    )
+
+    response = assistant.handle("Look at VS Code")
+    assert not response.success
+    assert "Observation cannot be chained." in response.message
+    assert len(backend.calls) == 0
+
+
 
 

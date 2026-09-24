@@ -31,6 +31,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "ui_inspect",
         "ui_action",
         "visual_inspect",
+        "visual_target",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
@@ -150,6 +151,19 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "goal": {
             "type": "string",
             "description": "Short visual question or description goal.",
+        },
+    }
+
+    vis_tgt = next(schema for schema in schemas if schema["name"] == "visual_target")
+    assert vis_tgt["parameters"]["required"] == ["query", "target"]
+    assert vis_tgt["parameters"]["properties"] == {
+        "query": {
+            "type": "string",
+            "description": "Explicit existing window title or application name.",
+        },
+        "target": {
+            "type": "string",
+            "description": "Short description of the visible element to locate.",
         },
     }
 

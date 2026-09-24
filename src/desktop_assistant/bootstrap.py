@@ -47,6 +47,7 @@ from desktop_assistant.visual_perception import (
     OpenAIVisualPerceptionProvider,
     VisualInspectTool,
     VisualPerceptionProvider,
+    VisualTargetTool,
     WindowCaptureBackend,
     WindowsWindowCaptureBackend,
 )
@@ -118,6 +119,12 @@ def build_assistant(
         window_capture_backend,
         visual_perception_provider,
     )
+    visual_target_tool = VisualTargetTool(
+        window_controller,
+        catalog,
+        window_capture_backend,
+        visual_perception_provider,
+    )
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -142,6 +149,7 @@ def build_assistant(
             UIInspectTool(window_controller, catalog, ui_inspector),
             UIActionTool(window_controller, catalog, ui_action_controller),
             visual_inspect_tool,
+            visual_target_tool,
         ),
         known_folders=known_folders,
     )

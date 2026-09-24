@@ -307,8 +307,12 @@ class FakeUIActionController:
 
 
 from desktop_assistant.visual_perception import (
+    NormalizedVisualBounds,
     VisualInspectTool,
     VisualPerceptionProvider,
+    VisualTargetResult,
+    VisualTargetStatus,
+    VisualTargetTool,
     WindowCapture,
     WindowCaptureBackend,
 )
@@ -338,16 +342,37 @@ class FakeWindowCaptureBackend:
 
 
 class FakeVisualPerceptionProvider:
-    def __init__(self, observation: str = "A visible window with buttons and text.", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        observation: str = "A visible window with buttons and text.",
+        target_result: VisualTargetResult | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.observation = observation
+        self.target_result = target_result
         self.error = error
         self.calls: list[tuple[bytes, str]] = []
+        self.target_calls: list[tuple[bytes, str]] = []
 
     def inspect(self, png_bytes: bytes, goal: str) -> str:
         self.calls.append((png_bytes, goal))
         if self.error is not None:
             raise self.error
         return self.observation
+
+    def locate_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
+        self.target_calls.append((png_bytes, target))
+        if self.error is not None:
+            raise self.error
+        if self.target_result is not None:
+            return self.target_result
+        return VisualTargetResult(
+            status=VisualTargetStatus.FOUND,
+            label=target,
+            description=f"Visible {target} control",
+            bounds=NormalizedVisualBounds(left=100, top=100, right=200, bottom=200),
+            confidence=0.95,
+        )
 
 
 def make_registry(
@@ -378,6 +403,8 @@ def make_registry(
     vscode_launcher = vscode_launcher or FakeVSCodeLauncher()
     task_runner = task_runner or FakeProjectTaskRunner()
     window_controller = window_controller or FakeWindowController()
+    capture_backend = window_capture_backend or FakeWindowCaptureBackend()
+    vision_provider = visual_perception_provider or FakeVisualPerceptionProvider()
     return ToolRegistry(
         default_tool_definitions(
             OpenAppTool(launcher, catalog),
@@ -404,8 +431,14 @@ def make_registry(
             VisualInspectTool(
                 window_controller,
                 catalog,
-                window_capture_backend or FakeWindowCaptureBackend(),
-                visual_perception_provider or FakeVisualPerceptionProvider(),
+                capture_backend,
+                vision_provider,
+            ),
+            VisualTargetTool(
+                window_controller,
+                catalog,
+                capture_backend,
+                vision_provider,
             ),
         ),
         safety_policy=safety_policy,

@@ -259,6 +259,21 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "visual_target",
+        "description": "Locate one specific visible target inside one explicit existing window and return its normalized bounding box.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Explicit existing window title or application name."},
+                "target": {"type": "string", "description": "Short description of the visible element to locate."},
+            },
+            "required": ["query", "target"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -537,11 +552,12 @@ def test_plan_tool_schema_structure() -> None:
     assert actions["minItems"] == 2
     assert actions["maxItems"] == 3
     variants = actions["items"]["anyOf"]
-    expected_tools = [tool["name"] for tool in TEST_TOOL_SCHEMAS if tool["name"] != "visual_inspect"]
+    expected_tools = [tool["name"] for tool in TEST_TOOL_SCHEMAS if tool["name"] not in ("visual_inspect", "visual_target")]
     assert len(variants) == len(expected_tools)
     tool_names = [v["properties"]["tool_name"]["enum"][0] for v in variants]
     assert tool_names == expected_tools
     assert "visual_inspect" not in tool_names
+    assert "visual_target" not in tool_names
 
 
 def test_malformed_plan_containing_visual_inspect_rejected() -> None:
@@ -559,6 +575,23 @@ def test_malformed_plan_containing_visual_inspect_rejected() -> None:
     with pytest.raises(MalformedIntentResponseError) as exc_info:
         make_provider(FakeClient(plan_with_vision)).resolve("Open Spotify and inspect visually")
     assert "visual_inspect" in str(exc_info.value)
+
+
+def test_malformed_plan_containing_visual_target_rejected() -> None:
+    plan_with_target = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":['
+                '{"tool_name":"open_app","arguments":{"app_name":"Spotify"}},'
+                '{"tool_name":"visual_target","arguments":{"query":"Spotify","target":"Play"}}'
+                ']}',
+            )
+        ]
+    )
+    with pytest.raises(MalformedIntentResponseError) as exc_info:
+        make_provider(FakeClient(plan_with_target)).resolve("Open Spotify and find Play button")
+    assert "visual_target" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -864,6 +897,21 @@ def test_provider_decide_from_observation_rejects_plan_or_second_observe() -> No
     assert result_vis.kind is IntentKind.UNSUPPORTED
     assert "Observation cannot be chained or planned." in str(result_vis.message)
 
+    target_response = SimpleNamespace(
+        output=[function_call("visual_target", '{"query":"Notepad","target":"Save"}')]
+    )
+    result_target = make_provider(FakeClient(target_response)).decide_from_observation("Settings", "obs")
+    assert result_target.kind is IntentKind.UNSUPPORTED
+    assert "Observation cannot be chained or planned." in str(result_target.message)
+
+
+def test_provider_observation_tools_exclude_visual_target() -> None:
+    provider = make_provider(FakeClient(SimpleNamespace(output=[])))
+    obs_tool_names = [t.get("name") for t in provider._observation_tools]
+    assert "visual_target" not in obs_tool_names
+    assert "visual_inspect" not in obs_tool_names
+    assert "ui_inspect" not in obs_tool_names
+
 
 def test_provider_decide_from_observation_rejects_multiple_calls() -> None:
     multi_response = SimpleNamespace(
@@ -900,6 +948,34 @@ def test_provider_resolves_visual_inspect(request_text: str, expected_query: str
     assert result.action is not None
     assert result.action.tool_name == "visual_inspect"
     assert result.action.arguments["query"] == expected_query
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_query", "expected_target"),
+    [
+        ("Βρες το Search στο VS Code.", "VS Code", "Search"),
+        ("Πού είναι το Search στο VS Code;", "VS Code", "Search"),
+        ("Koita to VS Code kai vre mou to Search.", "VS Code", "Search"),
+        ("Locate the Search icon in VS Code.", "VS Code", "Search icon"),
+        ("Pou einai to Search sto VS Code?", "VS Code", "Search"),
+    ],
+)
+def test_provider_resolves_visual_target(request_text: str, expected_query: str, expected_target: str) -> None:
+    response = SimpleNamespace(
+        output=[
+            function_call(
+                "visual_target",
+                f'{{"query":"{expected_query}","target":"{expected_target}"}}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(response)).resolve(request_text)
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "visual_target"
+    assert result.action.arguments["query"] == expected_query
+    assert result.action.arguments["target"] == expected_target
+
 
 
 

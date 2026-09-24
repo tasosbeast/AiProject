@@ -613,4 +613,19 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             RiskLevel.SAFE,
             lambda arguments: f"Visually inspect: {bounded_window_label(arguments['query'])}",
         )
+    if tool.name == "visual_target":
+        from desktop_assistant.windows import bounded_window_label
+
+        return ToolDefinition(
+            tool.name,
+            "Locate one specific visible target inside one explicit existing window and return its normalized bounding box.",
+            (
+                string_argument("query", "Explicit existing window title or application name."),
+                string_argument("target", "Short description of the visible element to locate."),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Locate visual target '{arguments['target']}' in: {bounded_window_label(arguments['query'])}",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")
+

@@ -228,16 +228,27 @@ Action: observe_ui_then_decide with query: Notepad
 User: 'Anoikse tis rythmiseis tou Notepad.'
 Action: observe_ui_then_decide with query: Notepad
 
-VISUAL INSPECTION:
-When the user asks to visually look at, inspect, or describe what is visible or seen in an existing window (e.g., 'Τι βλέπεις στο VS Code;', 'Κοίτα το VS Code και πες μου πού είναι το Search.', 'Look at Chrome and tell me what is visible.', 'Koita to VS Code kai pes mou ti vlepeis.'), call visual_inspect with query: <window>, goal: <short visual question or task>.
-Do NOT call visual_inspect for semantic control queries (use ui_inspect) or explicit UI actions (use ui_action) or vague UI control goals (use observe_ui_then_decide).
+VISUAL INSPECTION & TARGETING:
+- General visual inspection: When the user asks to visually look at, inspect, or describe what is visible or seen in an existing window (e.g., 'Τι βλέπεις στο VS Code;', 'Look at Chrome and tell me what is visible.', 'Koita to VS Code kai pes mou ti vlepeis.'), call visual_inspect with query: <window>, goal: <short visual question or task>.
+- Visual targeting: When the user asks to visually locate or find the position of a specific visible element or target inside an existing window (e.g., 'Βρες το Search στο VS Code.', 'Πού είναι το Search στο VS Code;', 'Koita to VS Code kai vre mou to Search.', 'Locate the Search icon in VS Code.'), call visual_target with query: <window>, target: <short description of the visible element to locate>.
+- Do NOT call visual_target or visual_inspect for semantic control queries (use ui_inspect) or explicit UI actions (use ui_action, e.g. 'Πάτα Settings στο Notepad.') or vague UI control goals (use observe_ui_then_decide).
+
+Examples for visual_target:
+User: 'Βρες το Search στο VS Code.'
+Action: visual_target with query: VS Code, target: Search
+
+User: 'Πού είναι το Search στο VS Code;'
+Action: visual_target with query: VS Code, target: Search
+
+User: 'Koita to VS Code kai vre mou to Search.'
+Action: visual_target with query: VS Code, target: Search
+
+User: 'Locate the Search icon in VS Code.'
+Action: visual_target with query: VS Code, target: Search icon
 
 Examples for visual_inspect:
 User: 'Τι βλέπεις στο VS Code;'
 Action: visual_inspect with query: VS Code, goal: Describe the visible UI and relevant content.
-
-User: 'Κοίτα το VS Code και πες μου πού είναι το Search.'
-Action: visual_inspect with query: VS Code, goal: Identify the visible Search-related UI.
 
 User: 'Look at Chrome and tell me what is visible.'
 Action: visual_inspect with query: Chrome, goal: Describe what is visible.
@@ -320,6 +331,7 @@ def build_plan_tool_schema(tool_schemas: Sequence[dict[str, Any]]) -> dict[str, 
             "propose_action_plan",
             "observe_ui_then_decide",
             "visual_inspect",
+            "visual_target",
         ):
             continue
         parameters = deepcopy(tool.get("parameters", {}))
@@ -413,12 +425,12 @@ class OpenAIIntentProvider:
                         prop["enum"].append(None)
             parameters["required"] = list(parameters.get("properties", {}))
         plan_tool_schemas = [
-            t for t in wire_schemas if t.get("name") not in ("visual_inspect",)
+            t for t in wire_schemas if t.get("name") not in ("visual_inspect", "visual_target")
         ]
         self._plan_schema = build_plan_tool_schema(plan_tool_schemas)
         self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, *_CONTROL_SCHEMAS]
         self._observation_tools = [
-            t for t in wire_schemas if t.get("name") not in ("ui_inspect", "visual_inspect")
+            t for t in wire_schemas if t.get("name") not in ("ui_inspect", "visual_inspect", "visual_target")
         ] + list(_CONTROL_SCHEMAS)
         self._client = client or OpenAI(
             api_key=api_key,
@@ -557,7 +569,7 @@ class OpenAIIntentProvider:
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported(message)
 
-        if name in ("propose_action_plan", "observe_ui_then_decide", "ui_inspect", "visual_inspect"):
+        if name in ("propose_action_plan", "observe_ui_then_decide", "ui_inspect", "visual_inspect", "visual_target"):
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported("Observation cannot be chained or planned.")
 
@@ -606,7 +618,7 @@ class OpenAIIntentProvider:
             if not isinstance(item_arguments, dict):
                 raise MalformedIntentResponseError(f"Plan action {idx + 1} arguments must be an object.")
 
-            if tool_name in ("visual_inspect", "observe_ui_then_decide", "propose_action_plan"):
+            if tool_name in ("visual_inspect", "visual_target", "observe_ui_then_decide", "propose_action_plan"):
                 raise MalformedIntentResponseError(f"Plan tool '{tool_name}' is not allowed in an action plan.")
 
             if self._registered_tools:
