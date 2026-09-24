@@ -80,7 +80,8 @@ def test_refinement_receives_two_images_in_exact_order():
     assert len(calls) == 1
     req = calls[0]
     assert req["store"] is False
-    assert req["max_output_tokens"] == 700
+    assert req["max_output_tokens"] == 1200
+    assert req["reasoning"] == {"effort": "low"}
     assert "tools" not in req
     assert req["text"]["format"]["strict"] is True
 

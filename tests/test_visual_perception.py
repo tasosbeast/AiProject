@@ -1192,7 +1192,8 @@ def test_openai_visual_target_provider_request_format_and_parsing() -> None:
     assert call["instructions"] == _TARGETING_INSTRUCTIONS
     assert "untrusted data" in call["instructions"]
     assert call["store"] is False
-    assert call["max_output_tokens"] == 700
+    assert call["max_output_tokens"] == 1200
+    assert call["reasoning"] == {"effort": "low"}
     assert "tools" not in call
 
     # Verify text format structured schema

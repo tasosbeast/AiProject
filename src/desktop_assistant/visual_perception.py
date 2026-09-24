@@ -359,6 +359,8 @@ class VisualProviderFailureCategory(str, Enum):
     CONNECTION = "connection"
     API_STATUS = "api_status"
     API = "api"
+    INCOMPLETE_MAX_OUTPUT_TOKENS = "incomplete_max_output_tokens"
+    INCOMPLETE_OTHER = "incomplete_other"
     EMPTY_RESPONSE = "empty_response"
     MALFORMED_RESPONSE = "malformed_response"
 
@@ -374,6 +376,27 @@ def _normalize_failure_category(val: Any) -> str | None:
         except ValueError:
             return None
     return None
+
+
+def _detect_incomplete_or_empty(response: Any) -> VisualProviderFailureCategory:
+    status = getattr(response, "status", None)
+    status_str = status.strip().lower() if isinstance(status, str) else None
+
+    incomplete_details = getattr(response, "incomplete_details", None)
+    reason = None
+    if incomplete_details is not None:
+        if isinstance(incomplete_details, dict):
+            reason = incomplete_details.get("reason")
+        else:
+            reason = getattr(incomplete_details, "reason", None)
+    reason_str = reason.strip().lower() if isinstance(reason, str) else None
+
+    if status_str == "incomplete" or incomplete_details is not None:
+        if reason_str in ("max_output_tokens", "max_tokens"):
+            return VisualProviderFailureCategory.INCOMPLETE_MAX_OUTPUT_TOKENS
+        return VisualProviderFailureCategory.INCOMPLETE_OTHER
+
+    return VisualProviderFailureCategory.EMPTY_RESPONSE
 
 
 class VisualPerceptionError(RuntimeError):
@@ -1203,7 +1226,8 @@ class OpenAIVisualPerceptionProvider:
                     }
                 ],
                 store=False,
-                max_output_tokens=700,
+                max_output_tokens=1200,
+                reasoning={"effort": "low"},
                 text={
                     "format": {
                         "type": "json_schema",
@@ -1249,8 +1273,12 @@ class OpenAIVisualPerceptionProvider:
             output_text = "".join(texts).strip()
 
         if not output_text:
-            self._log_failure("empty_response", started)
-            raise MalformedVisualPerceptionResponseError("Visual targeting response was empty.", category=VisualProviderFailureCategory.EMPTY_RESPONSE)
+            failure_category = _detect_incomplete_or_empty(response)
+            self._log_failure(failure_category.value, started)
+            raise MalformedVisualPerceptionResponseError(
+                "Visual targeting response was empty or incomplete.",
+                category=failure_category,
+            )
 
         try:
             result = _parse_and_validate_target_response(output_text)
@@ -1326,7 +1354,8 @@ class OpenAIVisualPerceptionProvider:
                     }
                 ],
                 store=False,
-                max_output_tokens=700,
+                max_output_tokens=1200,
+                reasoning={"effort": "low"},
                 text={
                     "format": {
                         "type": "json_schema",
@@ -1374,8 +1403,12 @@ class OpenAIVisualPerceptionProvider:
             output_text = "".join(texts).strip()
 
         if not output_text:
-            self._log_failure("empty_response", started)
-            raise MalformedVisualPerceptionResponseError("Visual targeting response was empty.", category=VisualProviderFailureCategory.EMPTY_RESPONSE)
+            failure_category = _detect_incomplete_or_empty(response)
+            self._log_failure(failure_category.value, started)
+            raise MalformedVisualPerceptionResponseError(
+                "Visual targeting response was empty or incomplete.",
+                category=failure_category,
+            )
 
         try:
             result = _parse_and_validate_target_response(output_text)

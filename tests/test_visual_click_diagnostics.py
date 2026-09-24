@@ -394,12 +394,19 @@ def test_success_prepares_click_without_diagnostics():
     VisualProviderFailureCategory.CONNECTION,
     VisualProviderFailureCategory.API_STATUS,
     VisualProviderFailureCategory.API,
+    VisualProviderFailureCategory.INCOMPLETE_MAX_OUTPUT_TOKENS,
+    VisualProviderFailureCategory.INCOMPLETE_OTHER,
     VisualProviderFailureCategory.EMPTY_RESPONSE,
     VisualProviderFailureCategory.MALFORMED_RESPONSE,
 ])
 def test_coarse_provider_failure_categories(category: VisualProviderFailureCategory):
     provider = FakeVisualPerceptionProvider()
-    if category in (VisualProviderFailureCategory.EMPTY_RESPONSE, VisualProviderFailureCategory.MALFORMED_RESPONSE):
+    if category in (
+        VisualProviderFailureCategory.EMPTY_RESPONSE,
+        VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        VisualProviderFailureCategory.INCOMPLETE_MAX_OUTPUT_TOKENS,
+        VisualProviderFailureCategory.INCOMPLETE_OTHER,
+    ):
         def raise_err(*_):
             raise MalformedVisualPerceptionResponseError("secret-coarse-error-token", category=category)
     else:
@@ -432,6 +439,8 @@ def test_coarse_provider_failure_categories(category: VisualProviderFailureCateg
     VisualProviderFailureCategory.CONNECTION,
     VisualProviderFailureCategory.API_STATUS,
     VisualProviderFailureCategory.API,
+    VisualProviderFailureCategory.INCOMPLETE_MAX_OUTPUT_TOKENS,
+    VisualProviderFailureCategory.INCOMPLETE_OTHER,
     VisualProviderFailureCategory.EMPTY_RESPONSE,
     VisualProviderFailureCategory.MALFORMED_RESPONSE,
 ])
@@ -445,7 +454,12 @@ def test_refinement_provider_failure_categories(category: VisualProviderFailureC
             0.95,
         )
     )
-    if category in (VisualProviderFailureCategory.EMPTY_RESPONSE, VisualProviderFailureCategory.MALFORMED_RESPONSE):
+    if category in (
+        VisualProviderFailureCategory.EMPTY_RESPONSE,
+        VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        VisualProviderFailureCategory.INCOMPLETE_MAX_OUTPUT_TOKENS,
+        VisualProviderFailureCategory.INCOMPLETE_OTHER,
+    ):
         def raise_err(*_):
             raise MalformedVisualPerceptionResponseError("secret-refine-error-token", category=category)
     else:
@@ -519,3 +533,82 @@ def test_no_leaks_for_arbitrary_category_strings():
     assert "12345" not in result.message
     assert "bbox" not in result.message
     assert "sk-abcdef" not in result.message
+
+
+def test_openai_targeting_detects_incomplete_responses():
+    from types import SimpleNamespace
+    from desktop_assistant.visual_perception import OpenAIVisualPerceptionProvider
+
+    class _Client:
+        def __init__(self, response):
+            self.response = response
+            self.calls = []
+            self.responses = self
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return self.response
+
+    # 1. status=incomplete + max_output_tokens -> incomplete_max_output_tokens
+    resp_max_out = SimpleNamespace(
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        output_text="",
+    )
+    client1 = _Client(resp_max_out)
+    provider1 = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=client1)
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_info:
+        provider1.locate_target(b"fake_png", "target")
+    assert exc_info.value.category == "incomplete_max_output_tokens"
+    assert len(client1.calls) == 1
+    assert client1.calls[0]["max_output_tokens"] == 1200
+    assert client1.calls[0]["reasoning"] == {"effort": "low"}
+
+    # Refinement also detects incomplete_max_output_tokens and uses same reasoning/budget
+    client1_ref = _Client(resp_max_out)
+    provider1_ref = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=client1_ref)
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_info_ref:
+        provider1_ref.refine_control(b"full_png", b"crop_png", "target")
+    assert exc_info_ref.value.category == "incomplete_max_output_tokens"
+    assert len(client1_ref.calls) == 1
+    assert client1_ref.calls[0]["max_output_tokens"] == 1200
+    assert client1_ref.calls[0]["reasoning"] == {"effort": "low"}
+
+    # 2. status=incomplete + max_tokens -> incomplete_max_output_tokens
+    resp_max_tok = SimpleNamespace(
+        status="incomplete",
+        incomplete_details={"reason": "max_tokens"},
+        output_text="",
+    )
+    client2 = _Client(resp_max_tok)
+    provider2 = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=client2)
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_info2:
+        provider2.locate_target(b"fake_png", "target")
+    assert exc_info2.value.category == "incomplete_max_output_tokens"
+    assert len(client2.calls) == 1
+
+    # 3. status=incomplete + other whitelisted/unlisted reason -> incomplete_other (no leaks)
+    resp_other = SimpleNamespace(
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="SECRET_LEAK_TOKEN_12345"),
+        output_text="",
+    )
+    client3 = _Client(resp_other)
+    provider3 = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=client3)
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_info3:
+        provider3.locate_target(b"fake_png", "target")
+    assert exc_info3.value.category == "incomplete_other"
+    assert "SECRET_LEAK_TOKEN_12345" not in str(exc_info3.value)
+    assert len(client3.calls) == 1
+
+    # 4. status=completed + genuinely empty output -> empty_response
+    resp_empty = SimpleNamespace(
+        status="completed",
+        output_text="",
+    )
+    client4 = _Client(resp_empty)
+    provider4 = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=client4)
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_info4:
+        provider4.locate_target(b"fake_png", "target")
+    assert exc_info4.value.category == "empty_response"
+    assert len(client4.calls) == 1
