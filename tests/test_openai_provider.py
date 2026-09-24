@@ -777,6 +777,7 @@ def test_provider_decide_from_observation_single_action() -> None:
     tool_names = [t.get("name") or t.get("function", {}).get("name") for t in call_kwargs["tools"]]
     assert "propose_action_plan" not in tool_names
     assert "observe_ui_then_decide" not in tool_names
+    assert "ui_inspect" not in tool_names
 
 
 def test_provider_decide_from_observation_conversational_and_unsupported() -> None:
@@ -814,6 +815,13 @@ def test_provider_decide_from_observation_rejects_plan_or_second_observe() -> No
     result_obs = make_provider(FakeClient(observe_response)).decide_from_observation("Settings", "obs")
     assert result_obs.kind is IntentKind.UNSUPPORTED
     assert "Observation cannot be chained or planned." in str(result_obs.message)
+
+    inspect_response = SimpleNamespace(
+        output=[function_call("ui_inspect", '{"query":"Notepad"}')]
+    )
+    result_inspect = make_provider(FakeClient(inspect_response)).decide_from_observation("Settings", "obs")
+    assert result_inspect.kind is IntentKind.UNSUPPORTED
+    assert "Observation cannot be chained or planned." in str(result_inspect.message)
 
 
 def test_provider_decide_from_observation_rejects_multiple_calls() -> None:

@@ -454,7 +454,7 @@ class Assistant:
         if decision.kind is IntentKind.TOOL_ACTION:
             if decision.action is None:
                 return self._completed(ToolResult(False, "The requested action was invalid.", RiskLevel.SAFE))
-            if decision.action.tool_name == "observe_ui_then_decide":
+            if decision.action.tool_name in ("observe_ui_then_decide", "ui_inspect"):
                 return self._completed(ToolResult(False, "Observation cannot be chained.", RiskLevel.SAFE))
             return self._execute_action(
                 decision.action.tool_name,

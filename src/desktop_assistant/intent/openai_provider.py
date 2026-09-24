@@ -391,7 +391,9 @@ class OpenAIIntentProvider:
             parameters["required"] = list(parameters.get("properties", {}))
         self._plan_schema = build_plan_tool_schema(wire_schemas)
         self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, *_CONTROL_SCHEMAS]
-        self._observation_tools = [*wire_schemas, *_CONTROL_SCHEMAS]
+        self._observation_tools = [
+            t for t in wire_schemas if t.get("name") != "ui_inspect"
+        ] + list(_CONTROL_SCHEMAS)
         self._client = client or OpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
@@ -529,7 +531,7 @@ class OpenAIIntentProvider:
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported(message)
 
-        if name in ("propose_action_plan", "observe_ui_then_decide"):
+        if name in ("propose_action_plan", "observe_ui_then_decide", "ui_inspect"):
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported("Observation cannot be chained or planned.")
 

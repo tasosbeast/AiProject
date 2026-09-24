@@ -318,3 +318,33 @@ def test_observation_length_is_bounded() -> None:
     _, observation = provider.decide_calls[0]
     assert len(observation) <= MAX_OBSERVATION_CHARS
     assert "[Observation truncated]" in observation
+
+
+def test_second_provider_returns_ui_inspect_rejected_safely() -> None:
+    first = IntentResult.observe_ui_then_decide("Notepad")
+    second = IntentResult.tool_action("ui_inspect", {"query": "Notepad"})
+    provider = FakeObserveProvider(first, second)
+    assistant, inspector, action_ctrl = make_harness(provider)
+
+    response = assistant.handle("Open settings.")
+    assert not response.success
+    assert "Observation cannot be chained" in response.message
+    # ui_inspect executed once for initial observation, NOT a second time
+    assert len(inspector.calls) == 1
+    # Exactly 2 provider calls total, no third provider call
+    assert len(provider.resolve_calls) == 1
+    assert len(provider.decide_calls) == 1
+    assert len(action_ctrl.execute_calls) == 0
+
+
+def test_direct_ui_inspect_works_normally() -> None:
+    direct = IntentResult.tool_action("ui_inspect", {"query": "Notepad"})
+    provider = FakeObserveProvider(direct)
+    assistant, inspector, _ = make_harness(provider)
+
+    response = assistant.handle("Τι controls έχει το Notepad;")
+    assert response.success
+    assert "Controls in Untitled - Notepad:" in response.message
+    assert len(inspector.calls) == 1
+    assert len(provider.resolve_calls) == 1
+    assert len(provider.decide_calls) == 0
