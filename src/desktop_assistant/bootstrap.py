@@ -52,6 +52,7 @@ from desktop_assistant.visual_perception import (
     WindowsWindowCaptureBackend,
 )
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
+from desktop_assistant.visual_click import VisualClickTool, MouseClickController, WindowsMouseClickController
 from desktop_assistant.window_input import InputController, WindowInputTool, WindowsInputController
 from desktop_assistant.windows import (
     FocusWindowTool,
@@ -88,6 +89,7 @@ def build_assistant(
     ui_action_controller: UIActionController | None = None,
     window_capture_backend: WindowCaptureBackend | None = None,
     visual_perception_provider: VisualPerceptionProvider | None = None,
+    mouse_click_controller: MouseClickController | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -150,6 +152,8 @@ def build_assistant(
             UIActionTool(window_controller, catalog, ui_action_controller),
             visual_inspect_tool,
             visual_target_tool,
+            VisualClickTool(window_controller, visual_target_tool,
+                            mouse_click_controller or WindowsMouseClickController()),
         ),
         known_folders=known_folders,
     )

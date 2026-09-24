@@ -627,5 +627,18 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             RiskLevel.SAFE,
             lambda arguments: f"Locate visual target '{arguments['target']}' in: {bounded_window_label(arguments['query'])}",
         )
+    if tool.name == "visual_click":
+        from desktop_assistant.visual_click import VisualClickTool
+
+        return ToolDefinition(
+            tool.name,
+            "Prepare a confirmed experimental single left click on one visually located target in an explicit existing window.",
+            (string_argument("query", "Explicit existing window title or application name."),
+             string_argument("target", "Visible target to click.")),
+            tool,
+            RiskLevel.SENSITIVE,
+            VisualClickTool.confirmation_summary,
+            "Visual targeting is experimental and may click a nearby visible control. Review the target before allowing.",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")
 

@@ -387,6 +387,46 @@ class FakeVisualPerceptionProvider:
         )
 
 
+from desktop_assistant.visual_click import VisualClickTool, WindowRectangle
+
+
+class FakeMouseClickController:
+    def __init__(self):
+        self.rectangle = WindowRectangle(100, 200, 900, 800)
+        self.root = 101
+        self.position = (0, 0)
+        self.moves = []
+        self.clicks = 0
+        self.rect_reads = []
+        self.on_move = None
+        self.on_click = None
+
+    def get_window_rect(self, handle):
+        self.rect_reads.append(handle)
+        return self.rectangle
+
+    def root_at_point(self, point):
+        return self.root
+
+    def move_cursor(self, point):
+        self.moves.append(point)
+        self.position = point
+        if self.on_move:
+            self.on_move()
+        return True
+
+    def get_cursor_pos(self):
+        return self.position
+
+    def left_click(self, verify_target):
+        from desktop_assistant.visual_click import MouseClickError
+        if self.on_click:
+            self.on_click()
+        if not verify_target():
+            raise MouseClickError("The prepared target changed. No click sent.")
+        self.clicks += 1
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -405,6 +445,7 @@ def make_registry(
     ui_action_controller: FakeUIActionController | None = None,
     window_capture_backend: WindowCaptureBackend | None = None,
     visual_perception_provider: VisualPerceptionProvider | None = None,
+    mouse_click_controller: FakeMouseClickController | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -452,6 +493,9 @@ def make_registry(
                 capture_backend,
                 vision_provider,
             ),
+            VisualClickTool(window_controller,
+                            VisualTargetTool(window_controller, catalog, capture_backend, vision_provider),
+                            mouse_click_controller or FakeMouseClickController()),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

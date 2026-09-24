@@ -32,6 +32,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "ui_action",
         "visual_inspect",
         "visual_target",
+        "visual_click",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)

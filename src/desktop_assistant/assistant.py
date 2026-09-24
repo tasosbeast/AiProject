@@ -307,7 +307,7 @@ class Assistant:
                 ToolResult(False, "Action plan must contain between 2 and 3 actions.", RiskLevel.SAFE)
             )
 
-        if any(a.tool_name in ("visual_inspect", "visual_target", "observe_ui_then_decide", "propose_action_plan") for a in actions):
+        if any(a.tool_name in ("visual_inspect", "visual_target", "visual_click", "observe_ui_then_decide", "propose_action_plan") for a in actions):
             return self._completed(
                 ToolResult(
                     False,
@@ -463,7 +463,7 @@ class Assistant:
         if decision.kind is IntentKind.TOOL_ACTION:
             if decision.action is None:
                 return self._completed(ToolResult(False, "The requested action was invalid.", RiskLevel.SAFE))
-            if decision.action.tool_name in ("observe_ui_then_decide", "ui_inspect", "visual_inspect", "visual_target"):
+            if decision.action.tool_name in ("observe_ui_then_decide", "ui_inspect", "visual_inspect", "visual_target", "visual_click"):
                 return self._completed(ToolResult(False, "Observation cannot be chained.", RiskLevel.SAFE))
             return self._execute_action(
                 decision.action.tool_name,

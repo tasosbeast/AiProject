@@ -1140,7 +1140,8 @@ class VisualTargetTool:
             ToolArguments((("query", query.strip() if isinstance(query, str) else ""), ("target", target_str))),
         )
 
-    def execute(self, prepared_value: object) -> ToolResult:
+    def locate_prepared(self, prepared_value: object) -> tuple[VisualTargetResult, int, int] | ToolResult:
+        """Read-only targeting of one frozen window, shared with confirmed visual click."""
         if not isinstance(prepared_value, PreparedVisualLocationTarget):
             return ToolResult(False, "The prepared visual targeting is invalid.", self.risk_level)
         target = prepared_value
@@ -1214,7 +1215,16 @@ class VisualTargetTool:
         finally:
             del png_data
 
-        # 5. Format sanitized target result
+        return result, width, height
+
+    def execute(self, prepared_value: object) -> ToolResult:
+        located = self.locate_prepared(prepared_value)
+        if isinstance(located, ToolResult):
+            return located
+        result, width, height = located
+        target = prepared_value
+        title = bounded_window_label(target.title)
+        # Format sanitized target result.
         if result.status == VisualTargetStatus.FOUND:
             message = f"Found '{result.label}' — {result.description}"
             details = {

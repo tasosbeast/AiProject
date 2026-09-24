@@ -233,6 +233,17 @@ VISUAL INSPECTION & TARGETING:
 - Visual targeting: When the user asks to visually locate or find the position of a specific visible element or target inside an existing window (e.g., 'Βρες το Search στο VS Code.', 'Πού είναι το Search στο VS Code;', 'Koita to VS Code kai vre mou to Search.', 'Locate the Search icon in VS Code.'), call visual_target with query: <window>, target: <short description of the visible element to locate>.
 - Do NOT call visual_target or visual_inspect for semantic control queries (use ui_inspect) or explicit UI actions (use ui_action, e.g. 'Πάτα Settings στο Notepad.') or vague UI control goals (use observe_ui_then_decide).
 
+Explicit visual clicks use visual_click with query and target only. Never provide coordinates.
+User: 'Κοίτα το VS Code και πάτα το Search.'
+Action: visual_click with query: VS Code, target: Search
+User: 'Click the Search icon in VS Code.'
+Action: visual_click with query: VS Code, target: Search icon
+User: 'Koita to VS Code kai pata to Search.'
+Action: visual_click with query: VS Code, target: Search
+Keep 'Βρες το Search στο VS Code.' as visual_target and 'Τι βλέπεις στο VS Code;' as visual_inspect.
+Keep 'Πάτα Settings στο Notepad.' as semantic ui_action. Never automatically fall back from ui_action to visual_click.
+visual_click is experimental and requires local confirmation. Never include it in an ActionPlan or observation decision.
+
 Examples for visual_target:
 User: 'Βρες το Search στο VS Code.'
 Action: visual_target with query: VS Code, target: Search
@@ -332,6 +343,7 @@ def build_plan_tool_schema(tool_schemas: Sequence[dict[str, Any]]) -> dict[str, 
             "observe_ui_then_decide",
             "visual_inspect",
             "visual_target",
+            "visual_click",
         ):
             continue
         parameters = deepcopy(tool.get("parameters", {}))
@@ -425,12 +437,12 @@ class OpenAIIntentProvider:
                         prop["enum"].append(None)
             parameters["required"] = list(parameters.get("properties", {}))
         plan_tool_schemas = [
-            t for t in wire_schemas if t.get("name") not in ("visual_inspect", "visual_target")
+            t for t in wire_schemas if t.get("name") not in ("visual_inspect", "visual_target", "visual_click")
         ]
         self._plan_schema = build_plan_tool_schema(plan_tool_schemas)
         self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, *_CONTROL_SCHEMAS]
         self._observation_tools = [
-            t for t in wire_schemas if t.get("name") not in ("ui_inspect", "visual_inspect", "visual_target")
+            t for t in wire_schemas if t.get("name") not in ("ui_inspect", "visual_inspect", "visual_target", "visual_click")
         ] + list(_CONTROL_SCHEMAS)
         self._client = client or OpenAI(
             api_key=api_key,
@@ -569,7 +581,7 @@ class OpenAIIntentProvider:
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported(message)
 
-        if name in ("propose_action_plan", "observe_ui_then_decide", "ui_inspect", "visual_inspect", "visual_target"):
+        if name in ("propose_action_plan", "observe_ui_then_decide", "ui_inspect", "visual_inspect", "visual_target", "visual_click"):
             self._log_success(IntentKind.UNSUPPORTED, started)
             return IntentResult.unsupported("Observation cannot be chained or planned.")
 
@@ -618,7 +630,7 @@ class OpenAIIntentProvider:
             if not isinstance(item_arguments, dict):
                 raise MalformedIntentResponseError(f"Plan action {idx + 1} arguments must be an object.")
 
-            if tool_name in ("visual_inspect", "visual_target", "observe_ui_then_decide", "propose_action_plan"):
+            if tool_name in ("visual_inspect", "visual_target", "visual_click", "observe_ui_then_decide", "propose_action_plan"):
                 raise MalformedIntentResponseError(f"Plan tool '{tool_name}' is not allowed in an action plan.")
 
             if self._registered_tools:
