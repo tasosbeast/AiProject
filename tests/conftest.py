@@ -349,8 +349,15 @@ class FakeVisualPerceptionProvider:
     def locate_control(self, png_bytes, target):
         return self.locate_target(png_bytes, target)
 
-    def refine_control(self, png_bytes, target):
-        return self.refine_target(png_bytes, target)
+    def refine_control(self, *args, **kwargs):
+        if len(args) == 3:
+            full_png, crop_png, target = args
+            self.context_refinement_calls.append((full_png, crop_png, target))
+            return self.refine_target(crop_png, target)
+        return self.refine_target(*args, **kwargs)
+
+    def refine_control_with_context(self, full_png: bytes, crop_png: bytes, target: str) -> VisualTargetResult:
+        return self.refine_control(full_png, crop_png, target)
 
     def __init__(
         self,
@@ -364,6 +371,7 @@ class FakeVisualPerceptionProvider:
         self.calls: list[tuple[bytes, str]] = []
         self.target_calls: list[tuple[bytes, str]] = []
         self.refinement_calls: list[tuple[bytes, str]] = []
+        self.context_refinement_calls: list[tuple[bytes, bytes, str]] = []
 
     def refine_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
         self.refinement_calls.append((png_bytes, target))
