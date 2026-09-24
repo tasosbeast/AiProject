@@ -13,8 +13,8 @@ from desktop_assistant.models import RiskLevel, ToolArguments, ToolPreparation, 
 from desktop_assistant.process_control import WindowController
 from desktop_assistant.runtime_paths import RuntimePaths
 from desktop_assistant.visual_perception import (
-    NormalizedVisualBounds, PreparedVisualLocationTarget, VisualTargetStatus,
-    VisualTargetTool, revalidate_visual_target_window,
+    NormalizedVisualBounds, PreparedVisualLocationTarget, VisualTargetOutcome,
+    VisualTargetStatus, VisualTargetTool, revalidate_visual_target_window,
 )
 from desktop_assistant.windows import bounded_window_label
 
@@ -203,12 +203,28 @@ class VisualClickTool:
             located = self._targeting.locate_prepared(target, click_control=True)
             after = self._mouse.get_window_rect(target.handle)
             if before != after or not self._valid_window(target):
-                return self._failure("The window changed during visual targeting. Request the click again.")
+                message = "The window changed during visual targeting. Request the click again."
+                if self._source_diagnostics:
+                    message += "\nDiagnostic: stale window."
+                return self._failure(message)
             if isinstance(located, ToolResult):
                 return self._failure("The visual target could not be verified.")
-            result, _, _ = located
-            if result.status is not VisualTargetStatus.FOUND:
-                return self._failure("The visual target was not found or was ambiguous. No click prepared.")
+            if isinstance(located, VisualTargetOutcome):
+                if located.error is not None:
+                    message = "The visual target could not be verified."
+                    if self._source_diagnostics and located.diagnostic_summary:
+                        message += f"\nDiagnostic: {located.diagnostic_summary}."
+                    return self._failure(message)
+                result = located.result
+                if result is None or result.status is not VisualTargetStatus.FOUND:
+                    message = "The visual target was not found or was ambiguous. No click prepared."
+                    if self._source_diagnostics and located.diagnostic_summary:
+                        message += f"\nDiagnostic: {located.diagnostic_summary}."
+                    return self._failure(message)
+            else:
+                result, _, _ = located
+                if result.status is not VisualTargetStatus.FOUND:
+                    return self._failure("The visual target was not found or was ambiguous. No click prepared.")
             result.__post_init__()
             result.bounds.__post_init__()
             _click_point(result.bounds, before)

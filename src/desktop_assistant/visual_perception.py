@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import re
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -497,6 +498,108 @@ def _parse_and_validate_target_response(raw_text: str) -> VisualTargetResult:
         reason=reason,
         bounds=None,
     )
+
+
+class TargetingFailureStage(str, Enum):
+    STALE_WINDOW = "stale window"
+    CAPTURE = "capture failure"
+    COARSE_PROVIDER = "coarse provider failure"
+    REFINEMENT_PROVIDER = "refinement provider failure"
+
+
+def _sanitize_diagnostic_reason(reason: str | None, limit: int = 150) -> str | None:
+    if not isinstance(reason, str) or not reason.strip():
+        return None
+
+    cleaned = reason.strip()
+
+    # If the reason is wrapped in JSON or is a JSON string, extract "reason" if present
+    if cleaned.startswith(("{", "[")):
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and isinstance(parsed.get("reason"), str):
+                cleaned = parsed["reason"]
+            else:
+                return None
+        except Exception:
+            return None
+
+    # Replace newlines, tabs, and carriage returns with spaces
+    cleaned = " ".join(cleaned.split())
+
+    # Strip any remaining embedded JSON objects or braces
+    cleaned = re.sub(r'\{[^{}]*\}', '', cleaned)
+    cleaned = re.sub(r'[{}\[\]"]', '', cleaned)
+
+    # Scrub coordinate/bounds expressions: e.g. bounds: (10, 20, 30, 40) or left=10
+    cleaned = re.sub(r'(?i)\b(?:normalized_bounds|bounds?|coords?|coordinates?|bbox)\b(?:\s*[:=]\s*\S+)?', '', cleaned)
+    cleaned = re.sub(r'(?i)\b(?:left|top|right|bottom|x|y|w|h|width|height)\s*[:=]\s*\d+', '', cleaned)
+    cleaned = re.sub(r'\(\s*\d+\s*(?:,\s*\d+\s*)+\)', '', cleaned)
+    cleaned = re.sub(r'\b\d+\s*,\s*\d+(?:\s*,\s*\d+)*\b', '', cleaned)
+
+    # Scrub large integer IDs (HWND / PID style numbers, e.g. >= 5 digits)
+    cleaned = re.sub(r'\b\d{5,}\b', '', cleaned)
+
+    # Scrub potential base64 strings (>= 20 alphanumeric chars)
+    cleaned = re.sub(r'\b[A-Za-z0-9+/=]{20,}\b', '', cleaned)
+
+    # Normalize whitespace
+    cleaned = " ".join(cleaned.split()).strip()
+
+    # Strip trailing punctuation for clean formatting
+    cleaned = cleaned.rstrip(".;, ").strip()
+
+    # Bounded length
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 3].rstrip() + "..."
+
+    return cleaned if cleaned else None
+
+
+@dataclass(frozen=True, slots=True)
+class VisualTargetOutcome:
+    result: VisualTargetResult | None = None
+    width: int = 0
+    height: int = 0
+    error: ToolResult | None = None
+    failure_stage: TargetingFailureStage | None = None
+    coarse_result: VisualTargetResult | None = None
+    refine_result: VisualTargetResult | None = None
+
+    def __iter__(self):
+        return iter((self.result, self.width, self.height))
+
+    def __getitem__(self, index: int) -> Any:
+        return (self.result, self.width, self.height)[index]
+
+    def __len__(self) -> int:
+        return 3
+
+    @property
+    def diagnostic_summary(self) -> str | None:
+        if self.failure_stage is not None:
+            return self.failure_stage.value
+
+        if self.result is None:
+            return None
+
+        if self.result.status == VisualTargetStatus.FOUND:
+            return None
+
+        if self.coarse_result is not None and self.coarse_result.status != VisualTargetStatus.FOUND:
+            status_str = f"coarse={self.coarse_result.status.value}"
+            reason = _sanitize_diagnostic_reason(self.coarse_result.reason)
+            return f"{status_str}: {reason}" if reason else status_str
+
+        if self.coarse_result is not None and self.coarse_result.status == VisualTargetStatus.FOUND:
+            if self.refine_result is not None:
+                status_str = f"coarse=found, refine={self.refine_result.status.value}"
+                reason = _sanitize_diagnostic_reason(self.refine_result.reason)
+                return f"{status_str}: {reason}" if reason else status_str
+
+        status_str = f"coarse={self.result.status.value}"
+        reason = _sanitize_diagnostic_reason(self.result.reason)
+        return f"{status_str}: {reason}" if reason else status_str
 
 
 class VisualTargetingProvider(Protocol):
@@ -1160,10 +1263,12 @@ class VisualTargetTool:
             ToolArguments((("query", query.strip() if isinstance(query, str) else ""), ("target", target_str))),
         )
 
-    def locate_prepared(self, prepared_value: object, *, click_control: bool = False) -> tuple[VisualTargetResult, int, int] | ToolResult:
+    def locate_prepared(self, prepared_value: object, *, click_control: bool = False) -> VisualTargetOutcome:
         """Read-only targeting of one frozen window, shared with confirmed visual click."""
         if not isinstance(prepared_value, PreparedVisualLocationTarget):
-            return ToolResult(False, "The prepared visual targeting is invalid.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, "The prepared visual targeting is invalid.", self.risk_level),
+            )
         target = prepared_value
         title = bounded_window_label(target.title)
 
@@ -1175,16 +1280,25 @@ class VisualTargetTool:
             target.title,
             target.executable_name,
         ):
-            return ToolResult(False, f"Window '{title}' changed or is no longer available.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, f"Window '{title}' changed or is no longer available.", self.risk_level),
+                failure_stage=TargetingFailureStage.STALE_WINDOW,
+            )
 
         # 2. Window capture
         try:
             capture = self._capture_backend.capture_window(target.handle)
         except Exception:
-            return ToolResult(False, f"Failed to capture window '{title}'.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, f"Failed to capture window '{title}'.", self.risk_level),
+                failure_stage=TargetingFailureStage.CAPTURE,
+            )
 
         if capture is None or not capture.png_bytes:
-            return ToolResult(False, f"Failed to capture window '{title}'.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, f"Failed to capture window '{title}'.", self.risk_level),
+                failure_stage=TargetingFailureStage.CAPTURE,
+            )
 
         # 3. Stale target revalidation immediately after capture (before calling provider)
         if not revalidate_visual_target_window(
@@ -1195,7 +1309,10 @@ class VisualTargetTool:
             target.executable_name,
         ):
             del capture
-            return ToolResult(False, f"Window '{title}' changed or is no longer available.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, f"Window '{title}' changed or is no longer available.", self.risk_level),
+                failure_stage=TargetingFailureStage.STALE_WINDOW,
+            )
 
         width = capture.width
         height = capture.height
@@ -1204,46 +1321,107 @@ class VisualTargetTool:
 
         # 4. Vision targeting provider call
         if self._provider is None:
-            return ToolResult(
-                False,
-                "Visual targeting is unavailable because no AI provider is configured.",
-                self.risk_level,
+            del png_data
+            return VisualTargetOutcome(
+                error=ToolResult(
+                    False,
+                    "Visual targeting is unavailable because no AI provider is configured.",
+                    self.risk_level,
+                ),
+                failure_stage=TargetingFailureStage.COARSE_PROVIDER,
             )
+
+        coarse_result: VisualTargetResult | None = None
+        refine_result: VisualTargetResult | None = None
 
         try:
             locate = self._provider.locate_control if click_control else self._provider.locate_target
-            result = locate(png_data, target.target)
-            _validate_target_result(result)
-            if result.status == VisualTargetStatus.FOUND:
-                crop_data, crop_box = _target_crop(png_data, width, height, result.bounds)
-                try:
-                    refine = self._provider.refine_control if click_control else self._provider.refine_target
-                    result = refine(crop_data, target.target)
-                    _validate_target_result(result)
-                    if result.status == VisualTargetStatus.FOUND:
-                        result = VisualTargetResult(
-                            status=result.status, label=result.label, description=result.description,
-                            bounds=_global_target_bounds(result.bounds, crop_box, width, height),
-                            confidence=result.confidence,
-                        )
-                finally:
-                    del crop_data, crop_box
+            coarse_result = locate(png_data, target.target)
+            _validate_target_result(coarse_result)
         except VisualPerceptionUnavailableError:
-            return ToolResult(False, "Visual targeting is temporarily unavailable.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, "Visual targeting is temporarily unavailable.", self.risk_level),
+                failure_stage=TargetingFailureStage.COARSE_PROVIDER,
+            )
         except MalformedVisualPerceptionResponseError:
-            return ToolResult(False, "Visual targeting response could not be processed.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, "Visual targeting response could not be processed.", self.risk_level),
+                failure_stage=TargetingFailureStage.COARSE_PROVIDER,
+            )
         except Exception:
-            return ToolResult(False, "Visual targeting failed.", self.risk_level)
+            return VisualTargetOutcome(
+                error=ToolResult(False, "Visual targeting failed.", self.risk_level),
+                failure_stage=TargetingFailureStage.COARSE_PROVIDER,
+            )
+
+        if coarse_result.status != VisualTargetStatus.FOUND:
+            del png_data
+            return VisualTargetOutcome(
+                result=coarse_result,
+                width=width,
+                height=height,
+                coarse_result=coarse_result,
+            )
+
+        final_result = coarse_result
+        try:
+            crop_data, crop_box = _target_crop(png_data, width, height, coarse_result.bounds)
+            try:
+                refine = self._provider.refine_control if click_control else self._provider.refine_target
+                refine_result = refine(crop_data, target.target)
+                _validate_target_result(refine_result)
+                if refine_result.status == VisualTargetStatus.FOUND:
+                    final_result = VisualTargetResult(
+                        status=refine_result.status,
+                        label=refine_result.label,
+                        description=refine_result.description,
+                        bounds=_global_target_bounds(refine_result.bounds, crop_box, width, height),
+                        confidence=refine_result.confidence,
+                        reason=refine_result.reason,
+                    )
+                else:
+                    final_result = refine_result
+            finally:
+                del crop_data, crop_box
+        except VisualPerceptionUnavailableError:
+            return VisualTargetOutcome(
+                error=ToolResult(False, "Visual targeting is temporarily unavailable.", self.risk_level),
+                failure_stage=TargetingFailureStage.REFINEMENT_PROVIDER,
+                coarse_result=coarse_result,
+            )
+        except MalformedVisualPerceptionResponseError:
+            return VisualTargetOutcome(
+                error=ToolResult(False, "Visual targeting response could not be processed.", self.risk_level),
+                failure_stage=TargetingFailureStage.REFINEMENT_PROVIDER,
+                coarse_result=coarse_result,
+            )
+        except Exception:
+            return VisualTargetOutcome(
+                error=ToolResult(False, "Visual targeting failed.", self.risk_level),
+                failure_stage=TargetingFailureStage.REFINEMENT_PROVIDER,
+                coarse_result=coarse_result,
+            )
         finally:
             del png_data
 
-        return result, width, height
+        return VisualTargetOutcome(
+            result=final_result,
+            width=width,
+            height=height,
+            coarse_result=coarse_result,
+            refine_result=refine_result,
+        )
 
     def execute(self, prepared_value: object) -> ToolResult:
-        located = self.locate_prepared(prepared_value)
-        if isinstance(located, ToolResult):
-            return located
-        result, width, height = located
+        outcome = self.locate_prepared(prepared_value)
+        if isinstance(outcome, ToolResult):
+            return outcome
+        if outcome.error is not None:
+            return outcome.error
+        result = outcome.result
+        if result is None:
+            return ToolResult(False, "Visual targeting failed.", self.risk_level)
+        width, height = outcome.width, outcome.height
         target = prepared_value
         title = bounded_window_label(target.title)
         # Format sanitized target result.
