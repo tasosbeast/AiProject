@@ -40,6 +40,7 @@ from desktop_assistant.system_status import (
     WindowsSystemStatusCollector,
 )
 from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitions
+from desktop_assistant.ui_action import UIActionController, UIActionTool, WindowsUIActionController
 from desktop_assistant.ui_perception import UIInspectTool, UIInspector, WindowsUIInspector
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
@@ -76,6 +77,7 @@ def build_assistant(
     input_controller: InputController | None = None,
     editable_control_resolver: EditableControlResolver | None = None,
     ui_inspector: UIInspector | None = None,
+    ui_action_controller: UIActionController | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -92,6 +94,7 @@ def build_assistant(
     input_controller = input_controller or WindowsInputController()
     editable_control_resolver = editable_control_resolver or WindowsEditableControlResolver()
     ui_inspector = ui_inspector or WindowsUIInspector()
+    ui_action_controller = ui_action_controller or WindowsUIActionController()
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -114,6 +117,7 @@ def build_assistant(
             FocusWindowTool(window_controller, catalog),
             WindowInputTool(window_controller, input_controller, catalog, editable_control_resolver),
             UIInspectTool(window_controller, catalog, ui_inspector),
+            UIActionTool(window_controller, catalog, ui_action_controller),
         ),
         known_folders=known_folders,
     )

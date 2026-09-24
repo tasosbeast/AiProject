@@ -29,6 +29,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "focus_window",
         "window_input",
         "ui_inspect",
+        "ui_action",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
@@ -120,6 +121,24 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         },
     }
 
+    ui_act = next(schema for schema in schemas if schema["name"] == "ui_action")
+    assert ui_act["parameters"]["required"] == ["query", "control", "action"]
+    assert ui_act["parameters"]["properties"] == {
+        "query": {
+            "type": "string",
+            "description": "Existing window title or application name.",
+        },
+        "control": {
+            "type": "string",
+            "description": "Exact accessible control name or label.",
+        },
+        "action": {
+            "type": "string",
+            "description": "Exact UI action to perform.",
+            "enum": ["invoke", "select", "expand", "collapse"],
+        },
+    }
+
 
 def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
     launcher = FakeLauncher()
@@ -161,6 +180,12 @@ def test_registry_rejects_unknown_tool_and_invalid_arguments() -> None:
         registry.execute("focus_window", {}),
         registry.execute("focus_window", {"handle": 12345}),
         registry.execute("focus_window", {"pid": 54321}),
+        registry.execute("ui_action", {"query": "Notepad", "control": "Settings", "action": "click"}),
+        registry.execute("ui_action", {"query": "Notepad", "control": "Settings", "action": 123}),
+        registry.execute("ui_action", {"query": "Notepad", "action": "invoke"}),
+        registry.execute("ui_action", {"control": "Settings", "action": "invoke"}),
+        registry.execute("ui_action", {}),
+        registry.execute("ui_action", {"query": "Notepad", "control": "Settings", "action": "invoke", "runtime_id": [1, 2]}),
     )
 
     assert all(not result.success for result in results)
@@ -182,6 +207,7 @@ def test_production_schemas_have_no_delete_or_shell_capability() -> None:
     assert not any("handle" in s["parameters"].get("properties", {}) for s in schemas)
     assert not any("pid" in s["parameters"].get("properties", {}) for s in schemas)
     assert not any("hwnd" in s["parameters"].get("properties", {}) for s in schemas)
+    assert not any("runtime_id" in s["parameters"].get("properties", {}) for s in schemas)
 
 
 def test_registry_keeps_safety_policy_in_execution_path() -> None:

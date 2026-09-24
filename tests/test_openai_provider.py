@@ -224,6 +224,26 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "ui_action",
+        "description": "Perform a confirmed UI Automation action on an existing window control.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Explicit window."},
+                "control": {"type": "string", "description": "Control name."},
+                "action": {
+                    "type": "string",
+                    "description": "UI action",
+                    "enum": ["invoke", "select", "expand", "collapse"],
+                },
+            },
+            "required": ["query", "control", "action"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -253,6 +273,24 @@ def test_provider_accepts_ui_inspect_routing_for_explicit_targets(utterance, que
     result = make_provider(client).resolve(utterance)
     assert result.action.tool_name == "ui_inspect"
     assert result.action.arguments == {"query": query}
+
+
+@pytest.mark.parametrize(("utterance", "query", "control", "action"), [
+    ("Πάτα Settings στο Notepad.", "Notepad", "Settings", "invoke"),
+    ("Άνοιξε το File menu στο Notepad.", "Notepad", "File", "expand"),
+    ("Πήγαινε στο tab Untitled στο Notepad.", "Notepad", "Untitled", "select"),
+    ("Press Settings in Notepad.", "Notepad", "Settings", "invoke"),
+    ("Pata Settings sto Notepad.", "Notepad", "Settings", "invoke"),
+    ("Expand File in Notepad.", "Notepad", "File", "expand"),
+    ("Collapse File in Notepad.", "Notepad", "File", "collapse"),
+])
+def test_provider_accepts_ui_action_routing(utterance, query, control, action):
+    client = FakeClient(SimpleNamespace(output=[function_call(
+        "ui_action", f'{{"query":"{query}","control":"{control}","action":"{action}"}}',
+    )]))
+    result = make_provider(client).resolve(utterance)
+    assert result.action.tool_name == "ui_action"
+    assert result.action.arguments == {"query": query, "control": control, "action": action}
     assert client.responses.calls[0]["input"] == utterance
 
 

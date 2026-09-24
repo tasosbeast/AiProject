@@ -173,6 +173,12 @@ class FakeProjectTaskRunner:
 
 from desktop_assistant.window_input import WindowInputTool, InputAction
 from desktop_assistant.ui_perception import UIInspectTool, UIInspection
+from desktop_assistant.ui_action import (
+    PreparedControlIdentity,
+    PreparedUIAction,
+    UIAction,
+    UIActionTool,
+)
 from desktop_assistant.windows import (
     FocusWindowTool,
     WindowInfo,
@@ -271,6 +277,35 @@ class FakeUIInspector:
         return self.inspection
 
 
+class FakeUIActionController:
+    def __init__(self, resolve_result: PreparedControlIdentity | str | None = None) -> None:
+        self.resolve_result = resolve_result
+        self.resolve_calls: list[tuple[int, int, str, UIAction]] = []
+        self.execute_calls: list[PreparedUIAction] = []
+        self.execute_result: ToolResult | bool = True
+
+    def resolve_control(
+        self,
+        handle: int,
+        process_id: int,
+        control_name: str,
+        action: UIAction,
+    ) -> PreparedControlIdentity | str:
+        self.resolve_calls.append((handle, process_id, control_name, action))
+        if self.resolve_result is not None:
+            return self.resolve_result
+        return PreparedControlIdentity(
+            control_type="button",
+            name=control_name,
+            automation_id=f"auto_{control_name.lower()}",
+            runtime_id=(42, handle, 100),
+        )
+
+    def execute_action(self, target: PreparedUIAction) -> ToolResult | bool:
+        self.execute_calls.append(target)
+        return self.execute_result
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -286,6 +321,7 @@ def make_registry(
     input_controller: FakeInputController | None = None,
     editable_control_resolver: FakeEditableControlResolver | None = None,
     ui_inspector: FakeUIInspector | None = None,
+    ui_action_controller: FakeUIActionController | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -318,6 +354,7 @@ def make_registry(
             WindowInputTool(window_controller, input_controller or FakeInputController(), catalog,
                             editable_control_resolver or FakeEditableControlResolver()),
             UIInspectTool(window_controller, catalog, ui_inspector or FakeUIInspector()),
+            UIActionTool(window_controller, catalog, ui_action_controller or FakeUIActionController()),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),

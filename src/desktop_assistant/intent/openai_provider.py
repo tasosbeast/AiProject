@@ -188,6 +188,20 @@ Action: ui_inspect with query: Notepad
 
 For ui_inspect, require an explicit target window or application name. Do not infer 'this window' or 'here'.
 
+User: 'Πάτα Settings στο Notepad.' or 'Press Settings in Notepad.' or 'Pata Settings sto Notepad.'
+Action: ui_action with query: Notepad, control: Settings, action: invoke
+
+User: 'Άνοιξε το File menu στο Notepad.' or 'Expand File in Notepad.' or 'Anoikse to File menu sto Notepad.'
+Action: ui_action with query: Notepad, control: File, action: expand
+
+User: 'Πήγαινε στο tab Untitled στο Notepad.' or 'Select tab Untitled in Notepad.'
+Action: ui_action with query: Notepad, control: Untitled, action: select
+
+User: 'Κλείσε το File menu στο Notepad.' or 'Collapse File in Notepad.'
+Action: ui_action with query: Notepad, control: File, action: collapse
+
+For ui_action, require an explicit target window, accessible control name, and action ('invoke', 'select', 'expand', 'collapse').
+
 User: 'Άνοιξε το Spotify και μετά γύρνα στο VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
 

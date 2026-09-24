@@ -583,4 +583,20 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             RiskLevel.SAFE,
             lambda arguments: f"Focus window: {arguments.get('query', '')}",
         )
+    if tool.name == "ui_action":
+        from desktop_assistant.ui_action import UIActionTool
+
+        return ToolDefinition(
+            tool.name,
+            "Perform a confirmed UI Automation action on an existing window control (invoke, select, expand, collapse).",
+            (
+                string_argument("query", "Existing window title or application name."),
+                string_argument("control", "Exact accessible control name or label."),
+                string_argument("action", "Exact UI action to perform.", enum_values=UIActionTool.allowed_actions),
+            ),
+            tool,
+            RiskLevel.SENSITIVE,
+            UIActionTool.confirmation_summary,
+            "UI actions interact directly with application controls. Review the target window, control, and action before allowing.",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")
