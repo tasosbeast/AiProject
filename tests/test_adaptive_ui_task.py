@@ -552,4 +552,178 @@ def test_adaptive_ui_task_rejects_destructive_actions(monkeypatch: pytest.Monkey
     assert assistant.has_pending_confirmation() is False
 
 
+def test_adaptive_ui_task_step_1_query_mismatch_rejected() -> None:
+    action_ctrl = FakeUIActionController()
+    provider = FakeAdaptiveProvider(
+        resolve_result=IntentResult.adaptive_ui_task("Search", "Visual Studio Code"),
+        step_decisions=[
+            IntentResult.tool_action("ui_action", {"query": "Google Chrome", "control": "Search", "action": "invoke"}),
+        ],
+    )
+    assistant, _, _ = make_adaptive_harness(provider, action_controller=action_ctrl)
+
+    resp = assistant.handle("Search in VS Code.")
+    assert resp.kind is AssistantResponseKind.COMPLETED
+    assert resp.result.success is False
+    assert resp.result.message == "Adaptive task step targeted a different window and was rejected."
+    assert assistant.has_pending_confirmation() is False
+    assert len(action_ctrl.execute_calls) == 0
+    assert len(provider.decide_calls) == 1
+    assert assistant._pending_adaptive_task is None
+
+
+def test_adaptive_ui_task_step_2_query_mismatch_rejected() -> None:
+    action_ctrl = FakeUIActionController()
+    input_ctrl = FakeInputController()
+    provider = FakeAdaptiveProvider(
+        resolve_result=IntentResult.adaptive_ui_task("Search and type", "Visual Studio Code"),
+        step_decisions=[
+            IntentResult.tool_action("ui_action", {"query": "Visual Studio Code", "control": "Search", "action": "invoke"}),
+            IntentResult.tool_action("window_input", {"query": "Google Chrome", "action": "type_text", "value": "Bookish"}),
+        ],
+    )
+    assistant, inspector, _ = make_adaptive_harness(provider, action_controller=action_ctrl, input_controller=input_ctrl)
+
+    resp1 = assistant.handle("Search in VS Code then type.")
+    assert resp1.kind is AssistantResponseKind.CONFIRMATION_REQUIRED
+    conf1 = resp1.confirmation
+    assert conf1 is not None
+
+    resp2 = assistant.confirm(conf1.confirmation_id)
+    assert resp2.kind is AssistantResponseKind.COMPLETED
+    assert resp2.result.success is False
+    assert resp2.result.message == "Adaptive task step targeted a different window and was rejected."
+    assert assistant.has_pending_confirmation() is False
+    assert len(action_ctrl.execute_calls) == 1
+    assert len(input_ctrl.calls) == 0
+    assert len(provider.decide_calls) == 2
+    assert len(inspector.calls) == 2
+    assert assistant._pending_adaptive_task is None
+
+
+def test_adaptive_ui_task_query_normalized_match_accepted() -> None:
+    action_ctrl = FakeUIActionController()
+    input_ctrl = FakeInputController()
+    provider = FakeAdaptiveProvider(
+        resolve_result=IntentResult.adaptive_ui_task("Search and type", "Visual Studio Code"),
+        step_decisions=[
+            IntentResult.tool_action("ui_action", {"query": "  visual studio code  ", "control": "Search", "action": "invoke"}),
+            IntentResult.tool_action("window_input", {"query": "VISUAL STUDIO CODE", "action": "type_text", "value": "Bookish"}),
+        ],
+    )
+    assistant, _, _ = make_adaptive_harness(provider, action_controller=action_ctrl, input_controller=input_ctrl)
+
+    resp1 = assistant.handle("Search in VS Code.")
+    assert resp1.kind is AssistantResponseKind.CONFIRMATION_REQUIRED
+    conf1 = resp1.confirmation
+    assert conf1 is not None
+
+    resp2 = assistant.confirm(conf1.confirmation_id)
+    assert resp2.kind is AssistantResponseKind.CONFIRMATION_REQUIRED
+    conf2 = resp2.confirmation
+    assert conf2 is not None
+
+    resp3 = assistant.confirm(conf2.confirmation_id)
+    assert resp3.kind is AssistantResponseKind.COMPLETED
+    assert resp3.result.success is True
+    assert len(action_ctrl.execute_calls) == 1
+    assert len(input_ctrl.calls) == 1
+    assert assistant._pending_adaptive_task is None
+
+
+def test_adaptive_ui_task_final_verification_success() -> None:
+    provider = FakeAdaptiveProvider(
+        resolve_result=IntentResult.adaptive_ui_task("Click and type", "Visual Studio Code"),
+        step_decisions=[
+            IntentResult.tool_action("ui_action", {"query": "Visual Studio Code", "control": "Search", "action": "invoke"}),
+            IntentResult.tool_action("window_input", {"query": "Visual Studio Code", "action": "type_text", "value": "Bookish"}),
+        ],
+    )
+    assistant, inspector, _ = make_adaptive_harness(provider)
+
+    resp1 = assistant.handle("Click Search and type.")
+    conf1 = resp1.confirmation
+    assert conf1 is not None
+    resp2 = assistant.confirm(conf1.confirmation_id)
+    conf2 = resp2.confirmation
+    assert conf2 is not None
+    resp3 = assistant.confirm(conf2.confirmation_id)
+
+    assert resp3.kind is AssistantResponseKind.COMPLETED
+    assert resp3.result.success is True
+    assert "Completed adaptive UI task with 2 actions:" in resp3.result.message
+    assert "Final UI verification completed." in resp3.result.message
+    assert len(inspector.calls) == 3
+    assert len(provider.decide_calls) == 2
+
+
+def test_adaptive_ui_task_final_verification_failure_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = FakeAdaptiveProvider(
+        resolve_result=IntentResult.adaptive_ui_task("Click and type", "Visual Studio Code"),
+        step_decisions=[
+            IntentResult.tool_action("ui_action", {"query": "Visual Studio Code", "control": "Search", "action": "invoke"}),
+            IntentResult.tool_action("window_input", {"query": "Visual Studio Code", "action": "type_text", "value": "Bookish"}),
+        ],
+    )
+    assistant, inspector, registry = make_adaptive_harness(provider)
+
+    original_execute = registry.execute
+
+    def fake_execute(tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+        if tool_name == "ui_inspect" and len(inspector.calls) >= 2:
+            return ToolResult(False, "Window lost or inspection failed.", RiskLevel.SAFE)
+        return original_execute(tool_name, arguments)
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    resp1 = assistant.handle("Click Search and type.")
+    conf1 = resp1.confirmation
+    assert conf1 is not None
+    resp2 = assistant.confirm(conf1.confirmation_id)
+    conf2 = resp2.confirmation
+    assert conf2 is not None
+    resp3 = assistant.confirm(conf2.confirmation_id)
+
+    assert resp3.kind is AssistantResponseKind.COMPLETED
+    assert resp3.result.success is True
+    assert "Completed adaptive UI task with 2 actions:" in resp3.result.message
+    assert "Final UI verification was unavailable." in resp3.result.message
+    assert len(provider.decide_calls) == 2
+
+
+def test_adaptive_ui_task_final_verification_exception_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = FakeAdaptiveProvider(
+        resolve_result=IntentResult.adaptive_ui_task("Click and type", "Visual Studio Code"),
+        step_decisions=[
+            IntentResult.tool_action("ui_action", {"query": "Visual Studio Code", "control": "Search", "action": "invoke"}),
+            IntentResult.tool_action("window_input", {"query": "Visual Studio Code", "action": "type_text", "value": "Bookish"}),
+        ],
+    )
+    assistant, inspector, registry = make_adaptive_harness(provider)
+
+    original_execute = registry.execute
+
+    def fake_execute(tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+        if tool_name == "ui_inspect" and len(inspector.calls) >= 2:
+            raise RuntimeError("Unexpected inspect failure")
+        return original_execute(tool_name, arguments)
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    resp1 = assistant.handle("Click Search and type.")
+    conf1 = resp1.confirmation
+    assert conf1 is not None
+    resp2 = assistant.confirm(conf1.confirmation_id)
+    conf2 = resp2.confirmation
+    assert conf2 is not None
+    resp3 = assistant.confirm(conf2.confirmation_id)
+
+    assert resp3.kind is AssistantResponseKind.COMPLETED
+    assert resp3.result.success is True
+    assert "Completed adaptive UI task with 2 actions:" in resp3.result.message
+    assert "Final UI verification was unavailable." in resp3.result.message
+    assert len(provider.decide_calls) == 2
+
+
+
 

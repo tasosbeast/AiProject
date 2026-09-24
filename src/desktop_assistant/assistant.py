@@ -694,6 +694,22 @@ class Assistant:
                 ToolResult(False, f"Tool '{tool_name}' is not allowed in an adaptive UI task.", RiskLevel.SAFE)
             )
 
+        raw_query = decision.action.arguments.get("query")
+        if (
+            not isinstance(raw_query, str)
+            or not raw_query.strip()
+            or raw_query.strip().casefold() != task.target_query.strip().casefold()
+        ):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(
+                ToolResult(
+                    False,
+                    "Adaptive task step targeted a different window and was rejected.",
+                    self._aggregate_risk(task.completed_mutations),
+                )
+            )
+
         prepared = self._tool_registry.prepare(tool_name, decision.action.arguments)
         if isinstance(prepared, ToolResult):
             with self._state_lock:
@@ -760,26 +776,35 @@ class Assistant:
             return self._run_adaptive_step(task, cancellation_token=cancellation_token)
 
         # Step 2 succeeded! Max 2 mutations completed.
-        # Optional final verification observation (SAFE ui_inspect)
+        # Final verification observation (SAFE ui_inspect)
+        verification_status: str | None = None
         if task.observation_count < 3 and not self._is_cancelled(cancellation_token):
             task.observation_count += 1
             try:
                 with self._execution_lock:
-                    self._tool_registry.execute("ui_inspect", {"query": task.target_query})
+                    verify_outcome = self._tool_registry.execute("ui_inspect", {"query": task.target_query})
+                if isinstance(verify_outcome, ToolResult) and verify_outcome.success:
+                    verification_status = "Final UI verification completed."
+                else:
+                    verification_status = "Final UI verification was unavailable."
             except Exception:
-                pass
+                verification_status = "Final UI verification was unavailable."
+        else:
+            verification_status = "Final UI verification was unavailable."
 
         with self._state_lock:
             self._pending_adaptive_task = None
 
-        summary = self._format_adaptive_summary(task.completed_mutations)
+        summary = self._format_adaptive_summary(task.completed_mutations, verification_note=verification_status)
         return self._completed(ToolResult(True, summary, self._aggregate_risk(task.completed_mutations)))
 
     @staticmethod
-    def _format_adaptive_summary(results: list[ToolResult]) -> str:
+    def _format_adaptive_summary(results: list[ToolResult], verification_note: str | None = None) -> str:
         lines = [f"Completed adaptive UI task with {len(results)} actions:"]
         for i, result in enumerate(results, start=1):
             lines.append(f"{i}. {result.message}")
+        if verification_note:
+            lines.append(verification_note)
         return "\n".join(lines)
 
     @staticmethod

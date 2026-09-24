@@ -51,7 +51,8 @@ For non-text actions value is absent (null in the strict API transport).
 Never substitute focus_window for a keyboard request. Never infer the target from 'here' or 'this window'.
 
 MULTI ACTION:
-If the user requests exactly 2 or 3 supported computer actions, you MUST call propose_action_plan exactly once and include EVERY requested action in exact requested order.
+If the user requests exactly 2 or 3 supported computer actions that are independent or precomputable, you MUST call propose_action_plan exactly once and include EVERY requested action in exact requested order.
+EXCEPT adaptive UI tasks: where a subsequent UI action on an existing window depends on state, controls, or focus produced by the first UI mutation (such as clicking Search then typing), you MUST call adaptive_ui_task instead.
 Never fulfill only the first part of a multi-action request.
 
 Never propose more than 3 actions. Never invent tools, shell commands, executable paths, missing filesystem paths, arguments, or confirmation text.

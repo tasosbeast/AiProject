@@ -1117,6 +1117,13 @@ def test_provider_plan_schema_and_parser_rejects_adaptive_task() -> None:
         make_provider(FakeClient(plan_response)).resolve("req")
 
 
+def test_instruction_contract_contains_adaptive_exception_and_example() -> None:
+    assert "EXCEPT adaptive UI tasks:" in provider_module._INSTRUCTIONS
+    assert "Click Search in VS Code and then type Bookish" in provider_module._INSTRUCTIONS
+    assert "Open Chrome and Spotify" in provider_module._INSTRUCTIONS
+
+
+
 
 
 
