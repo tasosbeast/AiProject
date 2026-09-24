@@ -30,6 +30,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "window_input",
         "ui_inspect",
         "ui_action",
+        "visual_inspect",
     }
     assert all(schema["strict"] is True for schema in schemas)
     assert all(schema["parameters"]["additionalProperties"] is False for schema in schemas)
@@ -136,6 +137,19 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
             "type": "string",
             "description": "Exact UI action to perform.",
             "enum": ["invoke", "select", "expand", "collapse", "toggle_on", "toggle_off"],
+        },
+    }
+
+    vis_insp = next(schema for schema in schemas if schema["name"] == "visual_inspect")
+    assert vis_insp["parameters"]["required"] == ["query"]
+    assert vis_insp["parameters"]["properties"] == {
+        "query": {
+            "type": "string",
+            "description": "Explicit existing window title or application name.",
+        },
+        "goal": {
+            "type": "string",
+            "description": "Short visual question or description goal.",
         },
     }
 

@@ -43,6 +43,13 @@ from desktop_assistant.tool_registry import ToolRegistry, default_tool_definitio
 from desktop_assistant.ui_action import UIActionController, UIActionTool, WindowsUIActionController
 from desktop_assistant.ui_perception import UIInspectTool, UIInspector, WindowsUIInspector
 from desktop_assistant.tools import OpenAppTool, OpenFolderTool, OpenWebsiteTool
+from desktop_assistant.visual_perception import (
+    OpenAIVisualPerceptionProvider,
+    VisualInspectTool,
+    VisualPerceptionProvider,
+    WindowCaptureBackend,
+    WindowsWindowCaptureBackend,
+)
 from desktop_assistant.voice.providers import SpeechProvider, TranscriptionProvider
 from desktop_assistant.window_input import InputController, WindowInputTool, WindowsInputController
 from desktop_assistant.windows import (
@@ -78,6 +85,8 @@ def build_assistant(
     editable_control_resolver: EditableControlResolver | None = None,
     ui_inspector: UIInspector | None = None,
     ui_action_controller: UIActionController | None = None,
+    window_capture_backend: WindowCaptureBackend | None = None,
+    visual_perception_provider: VisualPerceptionProvider | None = None,
 ) -> Assistant:
     """Compose the production assistant shared by every user interface."""
 
@@ -95,6 +104,20 @@ def build_assistant(
     editable_control_resolver = editable_control_resolver or WindowsEditableControlResolver()
     ui_inspector = ui_inspector or WindowsUIInspector()
     ui_action_controller = ui_action_controller or WindowsUIActionController()
+    window_capture_backend = window_capture_backend or WindowsWindowCaptureBackend()
+    if visual_perception_provider is None and settings.openai_api_key is not None:
+        visual_perception_provider = OpenAIVisualPerceptionProvider(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+            max_retries=settings.openai_max_retries,
+        )
+    visual_inspect_tool = VisualInspectTool(
+        window_controller,
+        catalog,
+        window_capture_backend,
+        visual_perception_provider,
+    )
     filesystem_validator = FilesystemPathValidator()
     registry = ToolRegistry(
         default_tool_definitions(
@@ -118,6 +141,7 @@ def build_assistant(
             WindowInputTool(window_controller, input_controller, catalog, editable_control_resolver),
             UIInspectTool(window_controller, catalog, ui_inspector),
             UIActionTool(window_controller, catalog, ui_action_controller),
+            visual_inspect_tool,
         ),
         known_folders=known_folders,
     )

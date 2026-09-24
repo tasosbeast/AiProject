@@ -599,4 +599,18 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
             UIActionTool.confirmation_summary,
             "UI actions interact directly with application controls. Review the target window, control, and action before allowing.",
         )
+    if tool.name == "visual_inspect":
+        from desktop_assistant.windows import bounded_window_label
+
+        return ToolDefinition(
+            tool.name,
+            "Visually inspect one explicit existing window by taking a read-only screenshot and describing its visible contents.",
+            (
+                string_argument("query", "Explicit existing window title or application name."),
+                ToolArgumentDefinition("goal", "Short visual question or description goal.", required=False),
+            ),
+            tool,
+            RiskLevel.SAFE,
+            lambda arguments: f"Visually inspect: {bounded_window_label(arguments['query'])}",
+        )
     raise ValueError(f"Unknown additional tool definition: {tool.name}")

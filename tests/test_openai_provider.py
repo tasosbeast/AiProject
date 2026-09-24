@@ -244,6 +244,21 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "visual_inspect",
+        "description": "Visually inspect one explicit existing window by taking a read-only screenshot and describing its visible contents.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Explicit window title or application name to inspect."},
+                "goal": {"type": "string", "description": "Short visual question or description goal."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -823,6 +838,13 @@ def test_provider_decide_from_observation_rejects_plan_or_second_observe() -> No
     assert result_inspect.kind is IntentKind.UNSUPPORTED
     assert "Observation cannot be chained or planned." in str(result_inspect.message)
 
+    vis_response = SimpleNamespace(
+        output=[function_call("visual_inspect", '{"query":"Notepad","goal":"Check"}')]
+    )
+    result_vis = make_provider(FakeClient(vis_response)).decide_from_observation("Settings", "obs")
+    assert result_vis.kind is IntentKind.UNSUPPORTED
+    assert "Observation cannot be chained or planned." in str(result_vis.message)
+
 
 def test_provider_decide_from_observation_rejects_multiple_calls() -> None:
     multi_response = SimpleNamespace(
@@ -834,6 +856,31 @@ def test_provider_decide_from_observation_rejects_multiple_calls() -> None:
     result = make_provider(FakeClient(multi_response)).decide_from_observation("Settings", "obs")
     assert result.kind is IntentKind.UNSUPPORTED
     assert "Multiple independent function calls are not supported." in str(result.message)
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected_query"),
+    [
+        ("Τι βλέπεις στο VS Code;", "VS Code"),
+        ("Κοίτα το VS Code και πες μου τι έχει ανοιχτό.", "VS Code"),
+        ("Koita to VS Code kai pes mou ti vlepeis.", "VS Code"),
+        ("Look at VS Code and tell me what is visible.", "VS Code"),
+    ],
+)
+def test_provider_resolves_visual_inspect(request_text: str, expected_query: str) -> None:
+    response = SimpleNamespace(
+        output=[
+            function_call(
+                "visual_inspect",
+                f'{{"query":"{expected_query}","goal":"Describe what is visible."}}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(response)).resolve(request_text)
+    assert result.kind is IntentKind.TOOL_ACTION
+    assert result.action is not None
+    assert result.action.tool_name == "visual_inspect"
+    assert result.action.arguments["query"] == expected_query
 
 
 

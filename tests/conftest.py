@@ -306,6 +306,50 @@ class FakeUIActionController:
         return self.execute_result
 
 
+from desktop_assistant.visual_perception import (
+    VisualInspectTool,
+    VisualPerceptionProvider,
+    WindowCapture,
+    WindowCaptureBackend,
+)
+
+
+class FakeWindowCaptureBackend:
+    def __init__(
+        self,
+        capture: WindowCapture | None = None,
+        failed: bool = False,
+        error: Exception | None = None,
+    ) -> None:
+        if failed:
+            self.capture = None
+        elif capture is not None:
+            self.capture = capture
+        else:
+            self.capture = WindowCapture(png_bytes=b"\x89PNG\r\n\x1a\nfake_image_bytes", width=800, height=600)
+        self.error = error
+        self.calls: list[int] = []
+
+    def capture_window(self, handle: int) -> WindowCapture | None:
+        self.calls.append(handle)
+        if self.error is not None:
+            raise self.error
+        return self.capture
+
+
+class FakeVisualPerceptionProvider:
+    def __init__(self, observation: str = "A visible window with buttons and text.", error: Exception | None = None) -> None:
+        self.observation = observation
+        self.error = error
+        self.calls: list[tuple[bytes, str]] = []
+
+    def inspect(self, png_bytes: bytes, goal: str) -> str:
+        self.calls.append((png_bytes, goal))
+        if self.error is not None:
+            raise self.error
+        return self.observation
+
+
 def make_registry(
     launcher: FakeLauncher,
     *,
@@ -322,6 +366,8 @@ def make_registry(
     editable_control_resolver: FakeEditableControlResolver | None = None,
     ui_inspector: FakeUIInspector | None = None,
     ui_action_controller: FakeUIActionController | None = None,
+    window_capture_backend: WindowCaptureBackend | None = None,
+    visual_perception_provider: VisualPerceptionProvider | None = None,
 ) -> ToolRegistry:
     catalog = AppCatalog()
     validator = FilesystemPathValidator()
@@ -355,6 +401,12 @@ def make_registry(
                             editable_control_resolver or FakeEditableControlResolver()),
             UIInspectTool(window_controller, catalog, ui_inspector or FakeUIInspector()),
             UIActionTool(window_controller, catalog, ui_action_controller or FakeUIActionController()),
+            VisualInspectTool(
+                window_controller,
+                catalog,
+                window_capture_backend or FakeWindowCaptureBackend(),
+                visual_perception_provider or FakeVisualPerceptionProvider(),
+            ),
         ),
         safety_policy=safety_policy,
         known_folders=KnownFolderResolver(home),
