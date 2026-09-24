@@ -284,6 +284,21 @@ Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS 
 User: 'Anoikse Spotify kai meta gyrna sto VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code
 
+ADAPTIVE UI TASKS:
+If the user requests a multi-step UI task on a specific existing window where a subsequent step depends on the UI state or focus produced by the first step (for example, clicking or pressing a Search button or text box, and then typing text into it), call adaptive_ui_task with query: <window> and goal: <goal>.
+Do NOT use propose_action_plan for tasks where subsequent actions depend on UI controls appearing or opening from step 1 (such as clicking Search then typing).
+Do NOT use adaptive_ui_task for independent multi-action requests (such as opening two apps or mute and volume up) or single actions.
+
+Examples for adaptive_ui_task:
+User: 'Πάτα Search στο VS Code και μετά γράψε Bookish.'
+Action: adaptive_ui_task with query: VS Code, goal: Click Search and type Bookish
+
+User: 'Click Search in VS Code and then type Bookish.'
+Action: adaptive_ui_task with query: VS Code, goal: Click Search and type Bookish
+
+User: 'Pata Search sto VS Code kai meta grapse Bookish.'
+Action: adaptive_ui_task with query: VS Code, goal: Click Search and type Bookish
+
 Never claim an action succeeded; local validation, safety policy, and confirmation remain authoritative. Requests may be English, Greek, Greeklish, or mixed. For a bare domain, use https://. Known-folder path values may start with Home, Desktop, Documents, Downloads, Music, Pictures, or Videos. Preserve explicit source and destination paths."""
 
 _OBSERVATION_INSTRUCTIONS = """You decide the final action for a user request based on a read-only UI observation of the target window.
@@ -296,6 +311,19 @@ For ui_action:
 - Action: exact UI action ('invoke', 'select', 'expand', 'collapse', 'toggle_on', 'toggle_off')
 
 Never propose action plans or repeated observations. If no suitable control exists, call report_unsupported."""
+
+_ADAPTIVE_STEP_INSTRUCTIONS = """You decide the next step of a bounded 2-step adaptive UI task on a target window.
+You receive the original user request, target window, step number (1 or 2), observation of UI controls, and previous step history.
+
+Allowed decisions:
+1. One computer action from the available tools: ui_action, visual_click, or window_input.
+2. If the goal is already fully satisfied by previous actions, call report_complete.
+3. If the requested task cannot be performed, control is not found, or goal is unsupported, call report_unsupported.
+
+Rules:
+- Never propose action plans, loops, repeated observations, or tools outside ui_action, visual_click, window_input, report_complete, report_unsupported.
+- At step 2, if the goal is completed, call report_complete.
+- Window query must match the target window."""
 
 _OBSERVE_UI_SCHEMA: dict[str, Any] = {
     "type": "function",
@@ -310,6 +338,46 @@ _OBSERVE_UI_SCHEMA: dict[str, Any] = {
             },
         },
         "required": ["query"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_ADAPTIVE_UI_TASK_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "name": "adaptive_ui_task",
+    "description": "Start a bounded 2-step adaptive UI task for a target window when the user specifies a goal where a subsequent step depends on the UI state produced by the first step (e.g. click a search control then enter text).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Existing window title or application name to target.",
+            },
+            "goal": {
+                "type": "string",
+                "description": "Short description of the complete UI task goal.",
+            },
+        },
+        "required": ["query", "goal"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+_COMPLETE_TASK_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "name": "report_complete",
+    "description": "Report that the adaptive UI task has been completed successfully.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "Summary message of task completion.",
+            },
+        },
+        "required": ["message"],
         "additionalProperties": False,
     },
     "strict": True,
@@ -352,6 +420,7 @@ def build_plan_tool_schema(tool_schemas: Sequence[dict[str, Any]]) -> dict[str, 
             "visual_inspect",
             "visual_target",
             "visual_click",
+            "adaptive_ui_task",
         ):
             continue
         parameters = deepcopy(tool.get("parameters", {}))
@@ -431,7 +500,10 @@ class OpenAIIntentProvider:
     ) -> None:
         self._model = model
         base_tool_schemas = [
-            t for t in tool_schemas if t.get("name") not in ("propose_action_plan", "observe_ui_then_decide")
+            t
+            for t in tool_schemas
+            if t.get("name")
+            not in ("propose_action_plan", "observe_ui_then_decide", "adaptive_ui_task")
         ]
         self._registered_tools = {tool["name"]: tool for tool in base_tool_schemas if "name" in tool}
         wire_schemas = deepcopy(base_tool_schemas)
@@ -448,10 +520,13 @@ class OpenAIIntentProvider:
             t for t in wire_schemas if t.get("name") not in ("visual_inspect", "visual_target", "visual_click")
         ]
         self._plan_schema = build_plan_tool_schema(plan_tool_schemas)
-        self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, *_CONTROL_SCHEMAS]
+        self._tools = [*wire_schemas, self._plan_schema, _OBSERVE_UI_SCHEMA, _ADAPTIVE_UI_TASK_SCHEMA, *_CONTROL_SCHEMAS]
         self._observation_tools = [
             t for t in wire_schemas if t.get("name") not in ("ui_inspect", "visual_inspect", "visual_target", "visual_click")
         ] + list(_CONTROL_SCHEMAS)
+        self._adaptive_tools = [
+            t for t in wire_schemas if t.get("name") in ("ui_action", "visual_click", "window_input")
+        ] + [_COMPLETE_TASK_SCHEMA, *_CONTROL_SCHEMAS]
         self._client = client or OpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
@@ -542,6 +617,21 @@ class OpenAIIntentProvider:
             self._log_success(IntentKind.OBSERVE_UI_THEN_DECIDE, started)
             return IntentResult.observe_ui_then_decide(arguments["query"].strip())
 
+        if name == "adaptive_ui_task":
+            if (
+                not isinstance(arguments, dict)
+                or not isinstance(arguments.get("query"), str)
+                or not arguments["query"].strip()
+                or not isinstance(arguments.get("goal"), str)
+                or not arguments["goal"].strip()
+            ):
+                raise MalformedIntentResponseError("adaptive_ui_task requires non-empty 'query' and 'goal' arguments.")
+            self._log_success(IntentKind.ADAPTIVE_UI_TASK, started)
+            return IntentResult.adaptive_ui_task(
+                goal=arguments["goal"].strip(),
+                query=arguments["query"].strip(),
+            )
+
         if name == "propose_action_plan":
             return self._parse_action_plan(arguments, started)
 
@@ -558,6 +648,82 @@ class OpenAIIntentProvider:
                 "model": self._model,
                 "result_type": IntentKind.TOOL_ACTION.value,
                 "requested_tool": action.tool_name,
+                "latency_ms": round((perf_counter() - started) * 1000),
+            },
+        )
+        return IntentResult.tool_action(action.tool_name, action.arguments)
+
+    def decide_adaptive_ui_step(
+        self,
+        original_request: str,
+        target_query: str,
+        step_number: int,
+        bounded_observation: str,
+        bounded_history: str,
+    ) -> IntentResult:
+        started = perf_counter()
+        prompt = (
+            f"Original user request: {original_request}\n"
+            f"Target window: {target_query}\n"
+            f"Current step: {step_number} of 2\n\n"
+            f"Previous step history:\n{bounded_history or 'None (initial step)'}\n\n"
+            f"Observed UI controls:\n{bounded_observation}"
+        )
+        calls = self._call_api(_ADAPTIVE_STEP_INSTRUCTIONS, prompt, self._adaptive_tools, started)
+
+        if len(calls) > 1:
+            self._log_success(IntentKind.UNSUPPORTED, started)
+            return IntentResult.unsupported("Multiple independent function calls are not supported.")
+
+        call = calls[0]
+        name = getattr(call, "name", None)
+        if not isinstance(name, str) or not name:
+            raise MalformedIntentResponseError("Intent call name was missing.")
+
+        arguments = self._parse_arguments(getattr(call, "arguments", None))
+
+        if name == "report_complete":
+            message = self._control_message(arguments)
+            self._log_success(IntentKind.COMPLETE, started)
+            return IntentResult.complete(message)
+
+        if name == "respond_conversationally":
+            message = self._control_message(arguments)
+            self._log_success(IntentKind.COMPLETE, started)
+            return IntentResult.complete(message)
+
+        if name == "report_unsupported":
+            message = self._control_message(arguments)
+            self._log_success(IntentKind.UNSUPPORTED, started)
+            return IntentResult.unsupported(message)
+
+        if name in (
+            "propose_action_plan",
+            "observe_ui_then_decide",
+            "adaptive_ui_task",
+            "ui_inspect",
+            "visual_inspect",
+            "visual_target",
+        ):
+            self._log_success(IntentKind.UNSUPPORTED, started)
+            return IntentResult.unsupported("Actions cannot be chained or planned inside an adaptive UI task.")
+
+        if name not in ("ui_action", "visual_click", "window_input"):
+            raise MalformedIntentResponseError(f"Unexpected tool call in adaptive UI task: {name}")
+
+        from desktop_assistant.intent.models import ToolAction
+
+        if self._registered_tools and name not in self._registered_tools:
+            raise MalformedIntentResponseError(f"Unknown tool call: {name}")
+
+        action = ToolAction(name, self._local_arguments(name, arguments))
+        logger.info(
+            "Adaptive task step intent resolved",
+            extra={
+                "model": self._model,
+                "result_type": IntentKind.TOOL_ACTION.value,
+                "requested_tool": action.tool_name,
+                "step_number": step_number,
                 "latency_ms": round((perf_counter() - started) * 1000),
             },
         )
@@ -638,7 +804,7 @@ class OpenAIIntentProvider:
             if not isinstance(item_arguments, dict):
                 raise MalformedIntentResponseError(f"Plan action {idx + 1} arguments must be an object.")
 
-            if tool_name in ("visual_inspect", "visual_target", "visual_click", "observe_ui_then_decide", "propose_action_plan"):
+            if tool_name in ("visual_inspect", "visual_target", "visual_click", "observe_ui_then_decide", "propose_action_plan", "adaptive_ui_task"):
                 raise MalformedIntentResponseError(f"Plan tool '{tool_name}' is not allowed in an action plan.")
 
             if self._registered_tools:

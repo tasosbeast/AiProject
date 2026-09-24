@@ -43,6 +43,21 @@ class _PendingPlan:
     confirmation_id: str | None = None
 
 
+@dataclass(slots=True)
+class _PendingAdaptiveTask:
+    task_id: str
+    original_request: str
+    target_query: str
+    goal: str
+    step_number: int
+    completed_mutations: list[ToolResult]
+    observation_count: int
+    decision_count: int
+    history: list[str]
+    confirmation_id: str | None = None
+    current_prepared_action: PreparedAction | None = None
+
+
 class Assistant:
     """Coordinates deterministic routing, optional intent resolution, and confirmation."""
 
@@ -57,8 +72,9 @@ class Assistant:
         self._intent_provider = intent_provider
         self._shutdown_event = threading.Event()
         self._state_lock = threading.RLock()
-        self._execution_lock = threading.Lock()
+        self._execution_lock = threading.RLock()
         self._pending_plan: _PendingPlan | None = None
+        self._pending_adaptive_task: _PendingAdaptiveTask | None = None
 
     @property
     def is_shutting_down(self) -> bool:
@@ -69,7 +85,7 @@ class Assistant:
         return self._shutdown_event.is_set()
 
     def _sync_pending_plan(self) -> None:
-        """Synchronize _pending_plan with authoritative tool registry confirmation state."""
+        """Synchronize pending state with authoritative tool registry confirmation state."""
         with self._state_lock:
             if self._pending_plan is not None:
                 if self._pending_plan.confirmation_id is not None:
@@ -79,6 +95,14 @@ class Assistant:
                             extra={"plan_id": self._pending_plan.plan_id},
                         )
                         self._pending_plan = None
+            if self._pending_adaptive_task is not None:
+                if self._pending_adaptive_task.confirmation_id is not None:
+                    if not self._tool_registry.has_pending_confirmation(self._pending_adaptive_task.confirmation_id):
+                        logger.info(
+                            "Pending adaptive task discarded because its confirmation expired or was removed",
+                            extra={"task_id": self._pending_adaptive_task.task_id},
+                        )
+                        self._pending_adaptive_task = None
 
     def handle(
         self,
@@ -168,6 +192,16 @@ class Assistant:
                 cancellation_token=cancellation_token,
             )
 
+        if intent.kind is IntentKind.ADAPTIVE_UI_TASK:
+            if intent.adaptive_task is None:
+                return self._completed(ToolResult(False, "The requested adaptive UI task was invalid.", RiskLevel.SAFE))
+            return self._handle_adaptive_ui_task(
+                request,
+                intent.adaptive_task.query,
+                intent.adaptive_task.goal,
+                cancellation_token=cancellation_token,
+            )
+
         return self._completed(
             ToolResult(False, intent.message or "That action is not supported yet.", RiskLevel.SAFE)
         )
@@ -184,6 +218,7 @@ class Assistant:
             self._sync_pending_plan()
             with self._state_lock:
                 pending_plan = self._pending_plan
+                pending_adaptive = self._pending_adaptive_task
 
             if pending_plan is not None and pending_plan.confirmation_id == confirmation_id:
                 res = self._tool_registry.confirm(confirmation_id)
@@ -246,6 +281,12 @@ class Assistant:
                     ToolResult(True, msg, self._aggregate_risk(pending_plan.completed_results))
                 )
 
+            if pending_adaptive is not None and pending_adaptive.confirmation_id == confirmation_id:
+                res = self._tool_registry.confirm(confirmation_id)
+                pending_adaptive.confirmation_id = None
+                pending_adaptive.current_prepared_action = None
+                return self._handle_adaptive_mutation_outcome(pending_adaptive, res, cancellation_token=None)
+
             return self._completed(self._tool_registry.confirm(confirmation_id))
 
     def cancel(self, confirmation_id: str) -> AssistantResponse:
@@ -254,6 +295,7 @@ class Assistant:
             self._sync_pending_plan()
             with self._state_lock:
                 pending_plan = self._pending_plan
+                pending_adaptive = self._pending_adaptive_task
 
             if pending_plan is not None and pending_plan.confirmation_id == confirmation_id:
                 cancel_res = self._tool_registry.cancel(confirmation_id)
@@ -278,18 +320,45 @@ class Assistant:
                     )
                 return self._completed(ToolResult(True, msg, RiskLevel.SAFE))
 
+            if pending_adaptive is not None and pending_adaptive.confirmation_id == confirmation_id:
+                cancel_res = self._tool_registry.cancel(confirmation_id)
+                with self._state_lock:
+                    self._pending_adaptive_task = None
+                if not cancel_res.success:
+                    return self._completed(cancel_res)
+
+                step_num = pending_adaptive.step_number
+                completed_count = len(pending_adaptive.completed_mutations)
+                if completed_count > 0:
+                    msg = (
+                        f"Adaptive task cancelled at step {step_num} of 2. "
+                        f"{completed_count} action(s) completed before cancellation. "
+                        f"Remaining actions were discarded."
+                    )
+                else:
+                    msg = (
+                        f"Adaptive task cancelled at step {step_num} of 2. "
+                        f"Remaining actions were discarded."
+                    )
+                return self._completed(ToolResult(True, msg, RiskLevel.SAFE))
+
             return self._completed(self._tool_registry.cancel(confirmation_id))
 
     def has_pending_confirmation(self) -> bool:
         self._sync_pending_plan()
         with self._state_lock:
-            return self._pending_plan is not None or self._tool_registry.has_pending_confirmation()
+            return (
+                self._pending_plan is not None
+                or self._pending_adaptive_task is not None
+                or self._tool_registry.has_pending_confirmation()
+            )
 
     def shutdown(self) -> None:
         """Signal shutdown immediately without blocking and discard session-only authorization state."""
         self._shutdown_event.set()
         with self._state_lock:
             self._pending_plan = None
+            self._pending_adaptive_task = None
         self._tool_registry.discard_pending_confirmation()
 
     def _handle_action_plan(
@@ -472,6 +541,256 @@ class Assistant:
             )
 
         return self._completed(ToolResult(False, "Observation cannot be chained or planned.", RiskLevel.SAFE))
+
+    def _handle_adaptive_ui_task(
+        self,
+        request: str,
+        query: str,
+        goal: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        if self._is_cancelled(cancellation_token):
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+        task = _PendingAdaptiveTask(
+            task_id=uuid4().hex,
+            original_request=request,
+            target_query=query,
+            goal=goal,
+            step_number=1,
+            completed_mutations=[],
+            observation_count=0,
+            decision_count=0,
+            history=[],
+        )
+        with self._state_lock:
+            self._pending_adaptive_task = task
+
+        return self._run_adaptive_step(task, cancellation_token=cancellation_token)
+
+    def _run_adaptive_step(
+        self,
+        task: _PendingAdaptiveTask,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        if self._is_cancelled(cancellation_token):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            msg = "Adaptive task cancelled."
+            if task.completed_mutations:
+                msg = f"Adaptive task cancelled after {len(task.completed_mutations)} action(s)."
+            return self._completed(ToolResult(False, msg, self._aggregate_risk(task.completed_mutations)))
+
+        if task.step_number > 2 or len(task.completed_mutations) >= 2:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(
+                ToolResult(False, "Adaptive task exceeded maximum allowed mutations.", RiskLevel.SAFE)
+            )
+
+        if task.observation_count >= 3:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(
+                ToolResult(False, "Adaptive task exceeded maximum allowed observations.", RiskLevel.SAFE)
+            )
+
+        # Safe observation (ui_inspect)
+        task.observation_count += 1
+        with self._execution_lock:
+            if self._is_cancelled(cancellation_token):
+                with self._state_lock:
+                    self._pending_adaptive_task = None
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+            inspect_outcome = self._tool_registry.execute("ui_inspect", {"query": task.target_query})
+
+        if isinstance(inspect_outcome, ConfirmationRequest):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return AssistantResponse.confirmation_required(inspect_outcome)
+
+        if not inspect_outcome.success:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            if task.step_number == 1:
+                return self._completed(inspect_outcome)
+            msg = f"Adaptive task stopped at step 2 observation: {inspect_outcome.message}"
+            return self._completed(ToolResult(False, msg, self._aggregate_risk(task.completed_mutations)))
+
+        if self._is_cancelled(cancellation_token):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+        observation = _format_observation(inspect_outcome)
+        history_str = self._format_adaptive_history(task.history)
+
+        if task.decision_count >= 3:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(
+                ToolResult(False, "Adaptive task exceeded decision limit.", RiskLevel.SAFE)
+            )
+
+        task.decision_count += 1
+        if self._intent_provider is None or not hasattr(self._intent_provider, "decide_adaptive_ui_step"):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE))
+
+        try:
+            decision = self._intent_provider.decide_adaptive_ui_step(
+                task.original_request,
+                task.target_query,
+                task.step_number,
+                observation,
+                history_str,
+            )
+        except IntentProviderError as exc:
+            logger.warning("Adaptive task provider unavailable: %s", type(exc).__name__)
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE))
+        except Exception:
+            logger.exception("Unexpected adaptive task provider failure")
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "AI routing is temporarily unavailable.", RiskLevel.SAFE))
+
+        if self._is_cancelled(cancellation_token):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+        if decision.kind is IntentKind.COMPLETE:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            if task.completed_mutations:
+                summary = self._format_adaptive_summary(task.completed_mutations)
+                msg = f"{summary}\n{decision.message}" if decision.message else summary
+                return self._completed(ToolResult(True, msg, self._aggregate_risk(task.completed_mutations)))
+            return self._completed(ToolResult(True, decision.message or "Adaptive task completed.", RiskLevel.SAFE))
+
+        if decision.kind is IntentKind.UNSUPPORTED:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            if task.completed_mutations:
+                msg = f"Adaptive task stopped at step {task.step_number}: {decision.message or 'Unsupported.'}"
+                return self._completed(ToolResult(False, msg, self._aggregate_risk(task.completed_mutations)))
+            return self._completed(ToolResult(False, decision.message or "That action is not supported yet.", RiskLevel.SAFE))
+
+        if decision.kind is not IntentKind.TOOL_ACTION or decision.action is None:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "Invalid decision for adaptive task step.", RiskLevel.SAFE))
+
+        tool_name = decision.action.tool_name
+        if tool_name not in ("ui_action", "visual_click", "window_input"):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(
+                ToolResult(False, f"Tool '{tool_name}' is not allowed in an adaptive UI task.", RiskLevel.SAFE)
+            )
+
+        prepared = self._tool_registry.prepare(tool_name, decision.action.arguments)
+        if isinstance(prepared, ToolResult):
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            msg = f"Adaptive task could not prepare step {task.step_number}: {prepared.message}"
+            return self._completed(ToolResult(False, msg, RiskLevel.SAFE))
+
+        if prepared.risk_level is RiskLevel.DESTRUCTIVE:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            return self._completed(ToolResult(False, "Adaptive tasks cannot contain destructive actions.", RiskLevel.SAFE))
+
+        context = PlanContext(
+            step_index=task.step_number,
+            total_steps=2,
+            completed_summaries=tuple(r.message for r in task.completed_mutations),
+        )
+        with self._execution_lock:
+            if self._is_cancelled(cancellation_token):
+                with self._state_lock:
+                    self._pending_adaptive_task = None
+                return self._completed(ToolResult(False, "Request was cancelled.", RiskLevel.SAFE))
+
+            outcome = self._tool_registry.dispatch_prepared(prepared, plan_context=context)
+
+        if isinstance(outcome, ConfirmationRequest):
+            task.confirmation_id = outcome.confirmation_id
+            task.current_prepared_action = prepared
+            with self._state_lock:
+                self._pending_adaptive_task = task
+            return AssistantResponse.confirmation_required(outcome)
+
+        return self._handle_adaptive_mutation_outcome(task, outcome, cancellation_token=cancellation_token)
+
+    def _handle_adaptive_mutation_outcome(
+        self,
+        task: _PendingAdaptiveTask,
+        outcome: ToolResult,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> AssistantResponse:
+        task.completed_mutations.append(outcome)
+        task.history.append(f"Step {task.step_number}: {outcome.message}")
+
+        if not outcome.success:
+            with self._state_lock:
+                self._pending_adaptive_task = None
+            msg = (
+                f"Adaptive task stopped at step {task.step_number} of 2: {outcome.message} "
+                f"Remaining steps were not run."
+            )
+            return self._completed(ToolResult(False, msg, self._aggregate_risk(task.completed_mutations)))
+
+        if task.step_number == 1:
+            if self._is_cancelled(cancellation_token):
+                with self._state_lock:
+                    self._pending_adaptive_task = None
+                msg = "Adaptive task cancelled after step 1. 1 action(s) completed before cancellation."
+                return self._completed(ToolResult(False, msg, self._aggregate_risk(task.completed_mutations)))
+
+            task.step_number = 2
+            with self._state_lock:
+                self._pending_adaptive_task = task
+            return self._run_adaptive_step(task, cancellation_token=cancellation_token)
+
+        # Step 2 succeeded! Max 2 mutations completed.
+        # Optional final verification observation (SAFE ui_inspect)
+        if task.observation_count < 3 and not self._is_cancelled(cancellation_token):
+            task.observation_count += 1
+            try:
+                with self._execution_lock:
+                    self._tool_registry.execute("ui_inspect", {"query": task.target_query})
+            except Exception:
+                pass
+
+        with self._state_lock:
+            self._pending_adaptive_task = None
+
+        summary = self._format_adaptive_summary(task.completed_mutations)
+        return self._completed(ToolResult(True, summary, self._aggregate_risk(task.completed_mutations)))
+
+    @staticmethod
+    def _format_adaptive_summary(results: list[ToolResult]) -> str:
+        lines = [f"Completed adaptive UI task with {len(results)} actions:"]
+        for i, result in enumerate(results, start=1):
+            lines.append(f"{i}. {result.message}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_adaptive_history(history: list[str]) -> str:
+        if not history:
+            return "None"
+        text = "\n".join(history)
+        if len(text) > MAX_OBSERVATION_CHARS:
+            suffix = "\n[History truncated]"
+            return text[: max(0, MAX_OBSERVATION_CHARS - len(suffix))] + suffix
+        return text
 
     def _execute_action(
         self,

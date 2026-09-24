@@ -21,3 +21,12 @@ class IntentProvider(Protocol):
     def resolve(self, request: str) -> IntentResult: ...
 
     def decide_from_observation(self, request: str, observation: str) -> IntentResult: ...
+
+    def decide_adaptive_ui_step(
+        self,
+        original_request: str,
+        target_query: str,
+        step_number: int,
+        bounded_observation: str,
+        bounded_history: str,
+    ) -> IntentResult: ...

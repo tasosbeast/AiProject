@@ -274,6 +274,37 @@ TEST_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "visual_click",
+        "description": "Locate and click one specific visible target inside an explicit window.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Explicit window title."},
+                "target": {"type": "string", "description": "Visible element description."},
+            },
+            "required": ["query", "target"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "window_input",
+        "description": "Send keyboard input to an existing window.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Target window."},
+                "action": {"type": "string", "description": "Action."},
+                "value": {"type": "string", "description": "Text value."},
+            },
+            "required": ["query", "action"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -552,12 +583,14 @@ def test_plan_tool_schema_structure() -> None:
     assert actions["minItems"] == 2
     assert actions["maxItems"] == 3
     variants = actions["items"]["anyOf"]
-    expected_tools = [tool["name"] for tool in TEST_TOOL_SCHEMAS if tool["name"] not in ("visual_inspect", "visual_target")]
+    expected_tools = [tool["name"] for tool in TEST_TOOL_SCHEMAS if tool["name"] not in ("visual_inspect", "visual_target", "visual_click", "adaptive_ui_task")]
     assert len(variants) == len(expected_tools)
     tool_names = [v["properties"]["tool_name"]["enum"][0] for v in variants]
     assert tool_names == expected_tools
     assert "visual_inspect" not in tool_names
     assert "visual_target" not in tool_names
+    assert "visual_click" not in tool_names
+    assert "adaptive_ui_task" not in tool_names
 
 
 def test_malformed_plan_containing_visual_inspect_rejected() -> None:
@@ -975,6 +1008,115 @@ def test_provider_resolves_visual_target(request_text: str, expected_query: str,
     assert result.action.tool_name == "visual_target"
     assert result.action.arguments["query"] == expected_query
     assert result.action.arguments["target"] == expected_target
+
+
+def test_provider_resolves_adaptive_ui_task() -> None:
+    response = SimpleNamespace(
+        output=[
+            function_call(
+                "adaptive_ui_task",
+                '{"query":"VS Code","goal":"Click Search and type Bookish"}',
+            )
+        ]
+    )
+    result = make_provider(FakeClient(response)).resolve("Πάτα Search στο VS Code και μετά γράψε Bookish.")
+    assert result.kind is IntentKind.ADAPTIVE_UI_TASK
+    assert result.adaptive_task is not None
+    assert result.adaptive_task.query == "VS Code"
+    assert result.adaptive_task.goal == "Click Search and type Bookish"
+    assert result.query == "VS Code"
+
+
+def test_provider_rejects_malformed_adaptive_ui_task() -> None:
+    bad_payloads = [
+        '{"query":"","goal":"goal"}',
+        '{"query":"VS Code","goal":""}',
+        '{"query":"   ","goal":"goal"}',
+        '{"query":"VS Code","goal":"   "}',
+        '{"goal":"goal"}',
+        '{"query":"VS Code"}',
+        "{}",
+    ]
+    for bad_args in bad_payloads:
+        response = SimpleNamespace(output=[function_call("adaptive_ui_task", bad_args)])
+        with pytest.raises(MalformedIntentResponseError):
+            make_provider(FakeClient(response)).resolve("some request")
+
+
+def test_provider_decide_adaptive_ui_step_actions() -> None:
+    for tool_name, args_json, expected_args in [
+        (
+            "ui_action",
+            '{"query":"VS Code","control":"Search","action":"invoke"}',
+            {"query": "VS Code", "control": "Search", "action": "invoke"},
+        ),
+        (
+            "visual_click",
+            '{"query":"VS Code","target":"Search"}',
+            {"query": "VS Code", "target": "Search"},
+        ),
+        (
+            "window_input",
+            '{"query":"VS Code","action":"type_text","value":"Bookish"}',
+            {"query": "VS Code", "action": "type_text", "value": "Bookish"},
+        ),
+    ]:
+        response = SimpleNamespace(output=[function_call(tool_name, args_json)])
+        client = FakeClient(response)
+        provider = make_provider(client)
+        result = provider.decide_adaptive_ui_step("req", "VS Code", 1, "obs", "hist")
+        assert result.kind is IntentKind.TOOL_ACTION
+        assert result.action is not None
+        assert result.action.tool_name == tool_name
+        assert result.action.arguments == expected_args
+
+
+def test_provider_decide_adaptive_ui_step_complete_and_unsupported() -> None:
+    comp_response = SimpleNamespace(output=[function_call("report_complete", '{"message":"Task finished."}')])
+    result_comp = make_provider(FakeClient(comp_response)).decide_adaptive_ui_step("req", "VS Code", 2, "obs", "hist")
+    assert result_comp.kind is IntentKind.COMPLETE
+    assert result_comp.message == "Task finished."
+
+    unsup_response = SimpleNamespace(output=[function_call("report_unsupported", '{"message":"Cannot find search."}')])
+    result_unsup = make_provider(FakeClient(unsup_response)).decide_adaptive_ui_step("req", "VS Code", 1, "obs", "hist")
+    assert result_unsup.kind is IntentKind.UNSUPPORTED
+    assert result_unsup.message == "Cannot find search."
+
+
+def test_provider_decide_adaptive_ui_step_rejects_plan_and_recursion() -> None:
+    for forbidden in (
+        "propose_action_plan",
+        "observe_ui_then_decide",
+        "adaptive_ui_task",
+        "ui_inspect",
+        "visual_inspect",
+        "visual_target",
+    ):
+        response = SimpleNamespace(output=[function_call(forbidden, '{"query":"VS Code"}')])
+        result = make_provider(FakeClient(response)).decide_adaptive_ui_step("req", "VS Code", 1, "obs", "hist")
+        assert result.kind is IntentKind.UNSUPPORTED
+        assert "Actions cannot be chained or planned inside an adaptive UI task." in str(result.message)
+
+
+def test_provider_decide_adaptive_ui_step_rejects_disallowed_tools() -> None:
+    response = SimpleNamespace(output=[function_call("open_app", '{"app_name":"Notepad"}')])
+    with pytest.raises(MalformedIntentResponseError):
+        make_provider(FakeClient(response)).decide_adaptive_ui_step("req", "VS Code", 1, "obs", "hist")
+
+
+def test_provider_plan_schema_and_parser_rejects_adaptive_task() -> None:
+    plan_response = SimpleNamespace(
+        output=[
+            function_call(
+                "propose_action_plan",
+                '{"actions":[{"tool_name":"open_app","arguments":{"app_name":"Notepad"}},{"tool_name":"adaptive_ui_task","arguments":{"query":"VS Code","goal":"test"}}]}',
+            )
+        ]
+    )
+    with pytest.raises(MalformedIntentResponseError):
+        make_provider(FakeClient(plan_response)).resolve("req")
+
+
 
 
 
