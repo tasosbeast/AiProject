@@ -339,9 +339,9 @@ class WindowsWindowCaptureBackend:
 
             # Restore old object so hbm is NO LONGER selected into the DC before GetDIBits
             restored = api.select_object(hdc_mem, old_bm)
-            is_selected = False
             if restored is None:
                 return None
+            is_selected = False
 
             bmi = BITMAPINFOHEADER()
             bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
@@ -395,22 +395,39 @@ class WindowsWindowCaptureBackend:
         finally:
             try:
                 if is_selected and hdc_mem and old_bm:
-                    api.select_object(hdc_mem, old_bm)
-                    is_selected = False
+                    if api.select_object(hdc_mem, old_bm) is not None:
+                        is_selected = False
             finally:
-                try:
-                    if hbm:
-                        api.delete_object(hbm)
-                        hbm = None
-                finally:
+                if is_selected:
+                    # Persistent restore failure: destroy memory DC first to release selected bitmap
                     try:
                         if hdc_mem:
                             api.delete_dc(hdc_mem)
                             hdc_mem = None
                     finally:
-                        if hdc_window:
-                            api.release_dc(handle, hdc_window)
-                            hdc_window = None
+                        try:
+                            if hbm:
+                                api.delete_object(hbm)
+                                hbm = None
+                        finally:
+                            if hdc_window:
+                                api.release_dc(handle, hdc_window)
+                                hdc_window = None
+                else:
+                    # Normal cleanup order: delete bitmap -> delete DC -> release window DC
+                    try:
+                        if hbm:
+                            api.delete_object(hbm)
+                            hbm = None
+                    finally:
+                        try:
+                            if hdc_mem:
+                                api.delete_dc(hdc_mem)
+                                hdc_mem = None
+                        finally:
+                            if hdc_window:
+                                api.release_dc(handle, hdc_window)
+                                hdc_window = None
 
 
 class OpenAIVisualPerceptionProvider:

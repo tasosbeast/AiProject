@@ -389,6 +389,7 @@ class FakeWin32CaptureApi:
         print_window_success: bool = True,
         select_object_error: bool = False,
         select_restore_error: bool = False,
+        select_restore_error_count: int | None = None,
         get_di_bits_lines: int | None = None,
         get_di_bits_error: bool = False,
     ) -> None:
@@ -400,6 +401,7 @@ class FakeWin32CaptureApi:
         self.print_window_success = print_window_success
         self.select_object_error = select_object_error
         self.select_restore_error = select_restore_error
+        self.select_restore_error_count = select_restore_error_count
         self.get_di_bits_lines = get_di_bits_lines
         self.get_di_bits_error = get_di_bits_error
 
@@ -409,6 +411,7 @@ class FakeWin32CaptureApi:
         self.deleted_dcs: list[int] = []
         self.released_dcs: list[tuple[int, int]] = []
         self.get_di_bits_selected_states: list[int | None] = []
+        self.deleted_objects_while_selected: list[int] = []
 
     def get_window_rect(self, handle: int) -> tuple[int, int, int, int] | None:
         self.call_log.append(f"GetWindowRect({handle})")
@@ -435,8 +438,12 @@ class FakeWin32CaptureApi:
         self.call_log.append(f"SelectObject({hdc}, {hgdiobj})")
         if hgdiobj == self.bitmap and self.select_object_error:
             return None
-        if hgdiobj == self.old_bitmap and self.select_restore_error:
-            return None
+        if hgdiobj == self.old_bitmap:
+            if self.select_restore_error:
+                return None
+            if self.select_restore_error_count is not None and self.select_restore_error_count > 0:
+                self.select_restore_error_count -= 1
+                return None
         prev = self.selected_object or self.old_bitmap
         self.selected_object = hgdiobj
         return prev
@@ -471,11 +478,19 @@ class FakeWin32CaptureApi:
     def delete_object(self, hgdiobj: int) -> bool:
         self.call_log.append(f"DeleteObject({hgdiobj})")
         self.deleted_objects.append(hgdiobj)
+        if (
+            hgdiobj == self.bitmap
+            and self.selected_object == self.bitmap
+            and (self.mem_dc is not None and self.mem_dc not in self.deleted_dcs)
+        ):
+            self.deleted_objects_while_selected.append(hgdiobj)
         return True
 
     def delete_dc(self, hdc: int) -> bool:
         self.call_log.append(f"DeleteDC({hdc})")
         self.deleted_dcs.append(hdc)
+        if hdc == self.mem_dc and self.selected_object == self.bitmap:
+            self.selected_object = None
         return True
 
 
@@ -647,4 +662,57 @@ def test_action_plan_rejects_visual_inspect_in_assistant() -> None:
     assert not response.success
     assert "Action plans cannot contain visual inspection" in response.message
     assert len(backend.calls) == 0
+
+
+def test_win32_restore_failure_before_get_di_bits_cleans_up_safely() -> None:
+    fake_api = FakeWin32CaptureApi(select_restore_error=True)
+    backend = WindowsWindowCaptureBackend(api=fake_api)
+
+    capture = backend.capture_window(101)
+    assert capture is None
+
+    # 1. GetDIBits is NOT called
+    assert not any("GetDIBits" in call for call in fake_api.call_log)
+
+    # 2. DeleteObject is NOT called while bitmap is still selected in an active DC
+    assert len(fake_api.deleted_objects_while_selected) == 0
+
+    # 3. Memory DC is destroyed BEFORE bitmap deletion when restore persistently fails
+    idx_dc = fake_api.call_log.index("DeleteDC(2001)")
+    idx_bm = fake_api.call_log.index("DeleteObject(3001)")
+    assert idx_dc < idx_bm
+
+    # 4. Bitmap, memory DC, and window DC are each cleaned exactly once
+    assert fake_api.deleted_objects == [3001]
+    assert fake_api.deleted_dcs == [2001]
+    assert fake_api.released_dcs == [(101, 1001)]
+
+
+def test_win32_restore_failure_retried_in_cleanup_success() -> None:
+    # First restore fails, retry in finally succeeds
+    fake_api = FakeWin32CaptureApi(select_restore_error_count=1)
+    backend = WindowsWindowCaptureBackend(api=fake_api)
+
+    capture = backend.capture_window(101)
+    assert capture is None
+
+    # 1. GetDIBits is NOT called
+    assert not any("GetDIBits" in call for call in fake_api.call_log)
+
+    # 2. DeleteObject is NOT called while bitmap is still selected
+    assert len(fake_api.deleted_objects_while_selected) == 0
+
+    # 3. Cleanup successfully deselected before deleting bitmap
+    restore_calls = [i for i, call in enumerate(fake_api.call_log) if call == "SelectObject(2001, 4001)"]
+    assert len(restore_calls) == 2  # first attempt before GetDIBits, second attempt in finally
+    idx_retry_restore = restore_calls[1]
+    idx_bm = fake_api.call_log.index("DeleteObject(3001)")
+    idx_dc = fake_api.call_log.index("DeleteDC(2001)")
+    assert idx_retry_restore < idx_bm < idx_dc
+
+    # 4. Each resource cleaned exactly once
+    assert fake_api.deleted_objects == [3001]
+    assert fake_api.deleted_dcs == [2001]
+    assert fake_api.released_dcs == [(101, 1001)]
+
 
