@@ -19,6 +19,7 @@ from desktop_assistant.visual_perception import (
     MalformedVisualPerceptionResponseError,
     NormalizedVisualBounds,
     VisualPerceptionUnavailableError,
+    VisualProviderFailureCategory,
     VisualTargetResult,
     VisualTargetStatus,
     VisualTargetTool,
@@ -384,3 +385,137 @@ def test_success_prepares_click_without_diagnostics():
     assert len(capture.calls) == 1
     assert len(vision.target_calls) == 1
     assert len(vision.refinement_calls) == 1
+
+
+@pytest.mark.parametrize("category", [
+    VisualProviderFailureCategory.TIMEOUT,
+    VisualProviderFailureCategory.AUTHENTICATION,
+    VisualProviderFailureCategory.RATE_LIMIT,
+    VisualProviderFailureCategory.CONNECTION,
+    VisualProviderFailureCategory.API_STATUS,
+    VisualProviderFailureCategory.API,
+    VisualProviderFailureCategory.EMPTY_RESPONSE,
+    VisualProviderFailureCategory.MALFORMED_RESPONSE,
+])
+def test_coarse_provider_failure_categories(category: VisualProviderFailureCategory):
+    provider = FakeVisualPerceptionProvider()
+    if category in (VisualProviderFailureCategory.EMPTY_RESPONSE, VisualProviderFailureCategory.MALFORMED_RESPONSE):
+        def raise_err(*_):
+            raise MalformedVisualPerceptionResponseError("secret-coarse-error-token", category=category)
+    else:
+        def raise_err(*_):
+            raise VisualPerceptionUnavailableError("secret-coarse-error-token", category=category)
+
+    provider.locate_control = raise_err
+    cap = FakeWindowCaptureBackend()
+    registry, _, mouse, _, _ = _harness(provider=provider, capture=cap)
+    result = registry.execute("visual_click", ARGS)
+
+    assert not result.success
+    expected_message = (
+        "The visual target could not be verified.\n"
+        f"Diagnostic: coarse provider failure: {category.value}."
+    )
+    assert result.message == expected_message
+    assert "secret-coarse-error-token" not in result.message
+    assert not registry.has_pending_confirmation()
+    assert mouse.clicks == 0 and not mouse.moves
+    assert len(cap.calls) == 1
+    assert len(provider.refinement_calls) == 0
+    assert len(provider.context_refinement_calls) == 0
+
+
+@pytest.mark.parametrize("category", [
+    VisualProviderFailureCategory.TIMEOUT,
+    VisualProviderFailureCategory.AUTHENTICATION,
+    VisualProviderFailureCategory.RATE_LIMIT,
+    VisualProviderFailureCategory.CONNECTION,
+    VisualProviderFailureCategory.API_STATUS,
+    VisualProviderFailureCategory.API,
+    VisualProviderFailureCategory.EMPTY_RESPONSE,
+    VisualProviderFailureCategory.MALFORMED_RESPONSE,
+])
+def test_refinement_provider_failure_categories(category: VisualProviderFailureCategory):
+    provider = FakeVisualPerceptionProvider(
+        target_result=VisualTargetResult(
+            VisualTargetStatus.FOUND,
+            "Search",
+            "Search control",
+            NormalizedVisualBounds(100, 100, 200, 200),
+            0.95,
+        )
+    )
+    if category in (VisualProviderFailureCategory.EMPTY_RESPONSE, VisualProviderFailureCategory.MALFORMED_RESPONSE):
+        def raise_err(*_):
+            raise MalformedVisualPerceptionResponseError("secret-refine-error-token", category=category)
+    else:
+        def raise_err(*_):
+            raise VisualPerceptionUnavailableError("secret-refine-error-token", category=category)
+
+    provider.refine_control = raise_err
+    cap = FakeWindowCaptureBackend()
+    registry, _, mouse, _, _ = _harness(provider=provider, capture=cap)
+    result = registry.execute("visual_click", ARGS)
+
+    assert not result.success
+    expected_message = (
+        "The visual target could not be verified.\n"
+        f"Diagnostic: refinement provider failure: {category.value}."
+    )
+    assert result.message == expected_message
+    assert "secret-refine-error-token" not in result.message
+    assert not registry.has_pending_confirmation()
+    assert mouse.clicks == 0 and not mouse.moves
+    assert len(cap.calls) == 1
+    assert len(provider.target_calls) == 1
+
+
+def test_packaged_mode_hides_failure_categories(monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    # 1. Coarse failure with category
+    provider_coarse = FakeVisualPerceptionProvider()
+    provider_coarse.locate_control = lambda *_: (_ for _ in ()).throw(
+        VisualPerceptionUnavailableError("bad connection", category=VisualProviderFailureCategory.CONNECTION)
+    )
+    registry1, _, _, _, _ = _harness(provider_coarse)
+    result1 = registry1.execute("visual_click", ARGS)
+    assert not result1.success
+    assert result1.message == "The visual target could not be verified."
+    assert "Diagnostic" not in result1.message
+    assert "connection" not in result1.message
+
+    # 2. Refinement failure with category
+    provider_refine = FakeVisualPerceptionProvider()
+    provider_refine.locate_control = lambda *_: VisualTargetResult(
+        VisualTargetStatus.FOUND, "Search", "Search control",
+        NormalizedVisualBounds(100, 100, 200, 200), 0.95,
+    )
+    provider_refine.refine_control = lambda *_: (_ for _ in ()).throw(
+        MalformedVisualPerceptionResponseError("bad json", category=VisualProviderFailureCategory.MALFORMED_RESPONSE)
+    )
+    registry2, _, _, _, _ = _harness(provider_refine)
+    result2 = registry2.execute("visual_click", ARGS)
+    assert not result2.success
+    assert result2.message == "The visual target could not be verified."
+    assert "Diagnostic" not in result2.message
+    assert "malformed_response" not in result2.message
+
+
+def test_no_leaks_for_arbitrary_category_strings():
+    provider = FakeVisualPerceptionProvider()
+    # Pass an arbitrary string containing HWND, coords, or secrets
+    polluted_category = "HWND=12345 bbox=(10,20,30,40) API_KEY=sk-abcdef"
+    provider.locate_control = lambda *_: (_ for _ in ()).throw(
+        VisualPerceptionUnavailableError("error msg", category=polluted_category)
+    )
+    registry, _, _, _, _ = _harness(provider)
+    result = registry.execute("visual_click", ARGS)
+    assert not result.success
+    assert result.message == (
+        "The visual target could not be verified.\n"
+        "Diagnostic: coarse provider failure."
+    )
+    assert "12345" not in result.message
+    assert "bbox" not in result.message
+    assert "sk-abcdef" not in result.message

@@ -352,8 +352,43 @@ class WindowCaptureBackend(Protocol):
     def capture_window(self, handle: int) -> WindowCapture | None: ...
 
 
+class VisualProviderFailureCategory(str, Enum):
+    TIMEOUT = "timeout"
+    AUTHENTICATION = "authentication"
+    RATE_LIMIT = "rate_limit"
+    CONNECTION = "connection"
+    API_STATUS = "api_status"
+    API = "api"
+    EMPTY_RESPONSE = "empty_response"
+    MALFORMED_RESPONSE = "malformed_response"
+
+
+def _normalize_failure_category(val: Any) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, VisualProviderFailureCategory):
+        return val.value
+    if isinstance(val, str):
+        try:
+            return VisualProviderFailureCategory(val.strip().lower()).value
+        except ValueError:
+            return None
+    return None
+
+
 class VisualPerceptionError(RuntimeError):
     """Base error for visual perception operations."""
+
+    def __init__(
+        self,
+        message: str = "",
+        category: str | VisualProviderFailureCategory | None = None,
+        *,
+        failure_category: str | VisualProviderFailureCategory | None = None,
+    ) -> None:
+        super().__init__(message)
+        cat = category if category is not None else failure_category
+        self.category: str | None = _normalize_failure_category(cat)
 
 
 class VisualPerceptionUnavailableError(VisualPerceptionError):
@@ -437,30 +472,46 @@ class VisualTargetResult:
 
 def _parse_and_validate_target_response(raw_text: str) -> VisualTargetResult:
     if not isinstance(raw_text, str) or not raw_text.strip():
-        raise MalformedVisualPerceptionResponseError("Visual target response was empty.")
+        raise MalformedVisualPerceptionResponseError(
+            "Visual target response was empty.",
+            category=VisualProviderFailureCategory.EMPTY_RESPONSE,
+        )
     try:
         data = json.loads(raw_text)
     except Exception as exc:
-        raise MalformedVisualPerceptionResponseError("Visual target response is not valid JSON.") from exc
+        raise MalformedVisualPerceptionResponseError(
+            "Visual target response is not valid JSON.",
+            category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        ) from exc
 
     if not isinstance(data, dict):
-        raise MalformedVisualPerceptionResponseError("Visual target response must be a JSON object.")
+        raise MalformedVisualPerceptionResponseError(
+            "Visual target response must be a JSON object.",
+            category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        )
 
     raw_status = data.get("status")
     try:
         status = VisualTargetStatus(raw_status)
     except Exception as exc:
-        raise MalformedVisualPerceptionResponseError(f"Unknown visual target status: {raw_status}") from exc
+        raise MalformedVisualPerceptionResponseError(
+            f"Unknown visual target status: {raw_status}",
+            category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        ) from exc
 
     if status == VisualTargetStatus.FOUND:
         raw_bounds = data.get("bounds")
         if not isinstance(raw_bounds, dict):
-            raise MalformedVisualPerceptionResponseError("Found target requires a bounds object.")
+            raise MalformedVisualPerceptionResponseError(
+                "Found target requires a bounds object.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
         for coord in ("left", "top", "right", "bottom"):
             val = raw_bounds.get(coord)
             if type(val) is not int:
                 raise MalformedVisualPerceptionResponseError(
-                    f"Coordinate '{coord}' must be an integer, got {type(val).__name__}."
+                    f"Coordinate '{coord}' must be an integer, got {type(val).__name__}.",
+                    category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
                 )
         left = raw_bounds["left"]
         top = raw_bounds["top"]
@@ -469,23 +520,38 @@ def _parse_and_validate_target_response(raw_text: str) -> VisualTargetResult:
         try:
             bounds = NormalizedVisualBounds(left=left, top=top, right=right, bottom=bottom)
         except ValueError as exc:
-            raise MalformedVisualPerceptionResponseError(str(exc)) from exc
+            raise MalformedVisualPerceptionResponseError(
+                str(exc),
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            ) from exc
 
         raw_conf = data.get("confidence")
         if type(raw_conf) not in (int, float) or isinstance(raw_conf, bool):
-            raise MalformedVisualPerceptionResponseError("Found target requires numeric confidence.")
+            raise MalformedVisualPerceptionResponseError(
+                "Found target requires numeric confidence.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
         conf = float(raw_conf)
         if not math.isfinite(conf) or not (0.0 <= conf <= 1.0):
-            raise MalformedVisualPerceptionResponseError(f"Confidence must be in [0.0, 1.0], got {raw_conf}.")
+            raise MalformedVisualPerceptionResponseError(
+                f"Confidence must be in [0.0, 1.0], got {raw_conf}.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
 
         raw_label = data.get("label")
         if not isinstance(raw_label, str) or not raw_label.strip():
-            raise MalformedVisualPerceptionResponseError("Found target requires a non-empty label.")
+            raise MalformedVisualPerceptionResponseError(
+                "Found target requires a non-empty label.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
         label = _sanitize_and_bound_observation(raw_label, 200)
 
         raw_desc = data.get("description")
         if not isinstance(raw_desc, str) or not raw_desc.strip():
-            raise MalformedVisualPerceptionResponseError("Found target requires a non-empty description.")
+            raise MalformedVisualPerceptionResponseError(
+                "Found target requires a non-empty description.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
         description = _sanitize_and_bound_observation(raw_desc, 500)
 
         raw_reason = data.get("reason")
@@ -501,12 +567,18 @@ def _parse_and_validate_target_response(raw_text: str) -> VisualTargetResult:
                 reason=reason,
             )
         except ValueError as exc:
-            raise MalformedVisualPerceptionResponseError(str(exc)) from exc
+            raise MalformedVisualPerceptionResponseError(
+                str(exc),
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            ) from exc
 
     # NOT_FOUND or AMBIGUOUS
     raw_bounds = data.get("bounds")
     if raw_bounds is not None:
-        raise MalformedVisualPerceptionResponseError(f"Status '{status.value}' must not include bounds.")
+        raise MalformedVisualPerceptionResponseError(
+            f"Status '{status.value}' must not include bounds.",
+            category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        )
 
     raw_reason = data.get("reason")
     reason = _sanitize_and_bound_observation(raw_reason, 500) if isinstance(raw_reason, str) and raw_reason.strip() else None
@@ -583,8 +655,13 @@ class VisualTargetOutcome:
     height: int = 0
     error: ToolResult | None = None
     failure_stage: TargetingFailureStage | None = None
+    failure_category: str | None = None
     coarse_result: VisualTargetResult | None = None
     refine_result: VisualTargetResult | None = None
+
+    def __post_init__(self) -> None:
+        if self.failure_category is not None:
+            object.__setattr__(self, "failure_category", _normalize_failure_category(self.failure_category))
 
     def __iter__(self):
         return iter((self.result, self.width, self.height))
@@ -598,6 +675,8 @@ class VisualTargetOutcome:
     @property
     def diagnostic_summary(self) -> str | None:
         if self.failure_stage is not None:
+            if self.failure_category:
+                return f"{self.failure_stage.value}: {self.failure_category}"
             return self.failure_stage.value
 
         if self.result is None:
@@ -654,10 +733,19 @@ def _call_refine_control(provider: Any, full_png: bytes, crop_png: bytes, target
 
 def _validate_target_result(result: VisualTargetResult) -> None:
     if not isinstance(result, VisualTargetResult):
-        raise MalformedVisualPerceptionResponseError("Invalid targeting result.")
-    result.__post_init__()
-    if result.bounds is not None:
-        result.bounds.__post_init__()
+        raise MalformedVisualPerceptionResponseError(
+            "Invalid targeting result.",
+            category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        )
+    try:
+        result.__post_init__()
+        if result.bounds is not None:
+            result.bounds.__post_init__()
+    except Exception as exc:
+        raise MalformedVisualPerceptionResponseError(
+            "Invalid targeting result.",
+            category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+        ) from exc
 
 
 def _target_crop(png: bytes, width: int, height: int,
@@ -995,22 +1083,22 @@ class OpenAIVisualPerceptionProvider:
             )
         except APITimeoutError as exc:
             self._log_failure("timeout", started)
-            raise VisualPerceptionUnavailableError("OpenAI request timed out.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI request timed out.", category=VisualProviderFailureCategory.TIMEOUT) from exc
         except AuthenticationError as exc:
             self._log_failure("authentication", started)
-            raise VisualPerceptionUnavailableError("OpenAI authentication failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI authentication failed.", category=VisualProviderFailureCategory.AUTHENTICATION) from exc
         except RateLimitError as exc:
             self._log_failure("rate_limit", started)
-            raise VisualPerceptionUnavailableError("OpenAI rate limit reached.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI rate limit reached.", category=VisualProviderFailureCategory.RATE_LIMIT) from exc
         except APIConnectionError as exc:
             self._log_failure("connection", started)
-            raise VisualPerceptionUnavailableError("OpenAI connection failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI connection failed.", category=VisualProviderFailureCategory.CONNECTION) from exc
         except APIStatusError as exc:
             self._log_failure("api_status", started)
-            raise VisualPerceptionUnavailableError("OpenAI API request failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI API request failed.", category=VisualProviderFailureCategory.API_STATUS) from exc
         except APIError as exc:
             self._log_failure("api", started)
-            raise VisualPerceptionUnavailableError("OpenAI API request failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI API request failed.", category=VisualProviderFailureCategory.API) from exc
 
         output_text = getattr(response, "output_text", None)
         if not isinstance(output_text, str) or not output_text.strip():
@@ -1030,7 +1118,7 @@ class OpenAIVisualPerceptionProvider:
 
         if not output_text:
             self._log_failure("empty_response", started)
-            raise MalformedVisualPerceptionResponseError("Visual perception response was empty.")
+            raise MalformedVisualPerceptionResponseError("Visual perception response was empty.", category=VisualProviderFailureCategory.EMPTY_RESPONSE)
 
         observation = _sanitize_and_bound_observation(output_text, MAX_OBSERVATION_CHARS)
         logger.info(
@@ -1083,7 +1171,10 @@ class OpenAIVisualPerceptionProvider:
     def _locate(self, png_bytes: bytes, target: str, instructions: str) -> VisualTargetResult:
         started = perf_counter()
         if not png_bytes or len(png_bytes) > MAX_IMAGE_BYTES:
-            raise MalformedVisualPerceptionResponseError("Invalid targeting image size.")
+            raise MalformedVisualPerceptionResponseError(
+                "Invalid targeting image size.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
         # Two passes are the complete call budget, including transport retries.
         client = self._client.with_options(max_retries=0) if isinstance(self._client, OpenAI) else self._client
         bounded_target = target.strip()[:MAX_TARGET_CHARS]
@@ -1124,22 +1215,22 @@ class OpenAIVisualPerceptionProvider:
             )
         except APITimeoutError as exc:
             self._log_failure("timeout", started)
-            raise VisualPerceptionUnavailableError("OpenAI request timed out.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI request timed out.", category=VisualProviderFailureCategory.TIMEOUT) from exc
         except AuthenticationError as exc:
             self._log_failure("authentication", started)
-            raise VisualPerceptionUnavailableError("OpenAI authentication failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI authentication failed.", category=VisualProviderFailureCategory.AUTHENTICATION) from exc
         except RateLimitError as exc:
             self._log_failure("rate_limit", started)
-            raise VisualPerceptionUnavailableError("OpenAI rate limit reached.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI rate limit reached.", category=VisualProviderFailureCategory.RATE_LIMIT) from exc
         except APIConnectionError as exc:
             self._log_failure("connection", started)
-            raise VisualPerceptionUnavailableError("OpenAI connection failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI connection failed.", category=VisualProviderFailureCategory.CONNECTION) from exc
         except APIStatusError as exc:
             self._log_failure("api_status", started)
-            raise VisualPerceptionUnavailableError("OpenAI API request failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI API request failed.", category=VisualProviderFailureCategory.API_STATUS) from exc
         except APIError as exc:
             self._log_failure("api", started)
-            raise VisualPerceptionUnavailableError("OpenAI API request failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI API request failed.", category=VisualProviderFailureCategory.API) from exc
 
         output_text = getattr(response, "output_text", None)
         if not isinstance(output_text, str) or not output_text.strip():
@@ -1159,13 +1250,18 @@ class OpenAIVisualPerceptionProvider:
 
         if not output_text:
             self._log_failure("empty_response", started)
-            raise MalformedVisualPerceptionResponseError("Visual targeting response was empty.")
+            raise MalformedVisualPerceptionResponseError("Visual targeting response was empty.", category=VisualProviderFailureCategory.EMPTY_RESPONSE)
 
         try:
             result = _parse_and_validate_target_response(output_text)
-        except Exception:
+        except Exception as exc:
             self._log_failure("malformed_response", started)
-            raise
+            if isinstance(exc, MalformedVisualPerceptionResponseError) and exc.category:
+                raise
+            raise MalformedVisualPerceptionResponseError(
+                "Visual targeting response was malformed.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            ) from exc
 
         logger.info(
             "Visual targeting completed",
@@ -1186,9 +1282,15 @@ class OpenAIVisualPerceptionProvider:
     ) -> VisualTargetResult:
         started = perf_counter()
         if not full_png_bytes or len(full_png_bytes) > MAX_IMAGE_BYTES:
-            raise MalformedVisualPerceptionResponseError("Invalid full targeting image size.")
+            raise MalformedVisualPerceptionResponseError(
+                "Invalid full targeting image size.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
         if not crop_png_bytes or len(crop_png_bytes) > MAX_IMAGE_BYTES:
-            raise MalformedVisualPerceptionResponseError("Invalid crop targeting image size.")
+            raise MalformedVisualPerceptionResponseError(
+                "Invalid crop targeting image size.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            )
 
         client = self._client.with_options(max_retries=0) if isinstance(self._client, OpenAI) else self._client
         bounded_target = target.strip()[:MAX_TARGET_CHARS]
@@ -1236,22 +1338,22 @@ class OpenAIVisualPerceptionProvider:
             )
         except APITimeoutError as exc:
             self._log_failure("timeout", started)
-            raise VisualPerceptionUnavailableError("OpenAI request timed out.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI request timed out.", category=VisualProviderFailureCategory.TIMEOUT) from exc
         except AuthenticationError as exc:
             self._log_failure("authentication", started)
-            raise VisualPerceptionUnavailableError("OpenAI authentication failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI authentication failed.", category=VisualProviderFailureCategory.AUTHENTICATION) from exc
         except RateLimitError as exc:
             self._log_failure("rate_limit", started)
-            raise VisualPerceptionUnavailableError("OpenAI rate limit reached.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI rate limit reached.", category=VisualProviderFailureCategory.RATE_LIMIT) from exc
         except APIConnectionError as exc:
             self._log_failure("connection", started)
-            raise VisualPerceptionUnavailableError("OpenAI connection failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI connection failed.", category=VisualProviderFailureCategory.CONNECTION) from exc
         except APIStatusError as exc:
             self._log_failure("api_status", started)
-            raise VisualPerceptionUnavailableError("OpenAI API request failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI API request failed.", category=VisualProviderFailureCategory.API_STATUS) from exc
         except APIError as exc:
             self._log_failure("api", started)
-            raise VisualPerceptionUnavailableError("OpenAI API request failed.") from exc
+            raise VisualPerceptionUnavailableError("OpenAI API request failed.", category=VisualProviderFailureCategory.API) from exc
         finally:
             del b64_full, data_url_full, b64_crop, data_url_crop
 
@@ -1273,13 +1375,18 @@ class OpenAIVisualPerceptionProvider:
 
         if not output_text:
             self._log_failure("empty_response", started)
-            raise MalformedVisualPerceptionResponseError("Visual targeting response was empty.")
+            raise MalformedVisualPerceptionResponseError("Visual targeting response was empty.", category=VisualProviderFailureCategory.EMPTY_RESPONSE)
 
         try:
             result = _parse_and_validate_target_response(output_text)
-        except Exception:
+        except Exception as exc:
             self._log_failure("malformed_response", started)
-            raise
+            if isinstance(exc, MalformedVisualPerceptionResponseError) and exc.category:
+                raise
+            raise MalformedVisualPerceptionResponseError(
+                "Visual targeting response was malformed.",
+                category=VisualProviderFailureCategory.MALFORMED_RESPONSE,
+            ) from exc
 
         logger.info(
             "Visual targeting context refinement completed",
@@ -1521,15 +1628,17 @@ class VisualTargetTool:
             locate = self._provider.locate_control if click_control else self._provider.locate_target
             coarse_result = locate(png_data, target.target)
             _validate_target_result(coarse_result)
-        except VisualPerceptionUnavailableError:
+        except VisualPerceptionUnavailableError as exc:
             return VisualTargetOutcome(
                 error=ToolResult(False, "Visual targeting is temporarily unavailable.", self.risk_level),
                 failure_stage=TargetingFailureStage.COARSE_PROVIDER,
+                failure_category=getattr(exc, "category", None),
             )
-        except MalformedVisualPerceptionResponseError:
+        except MalformedVisualPerceptionResponseError as exc:
             return VisualTargetOutcome(
                 error=ToolResult(False, "Visual targeting response could not be processed.", self.risk_level),
                 failure_stage=TargetingFailureStage.COARSE_PROVIDER,
+                failure_category=getattr(exc, "category", None),
             )
         except Exception:
             return VisualTargetOutcome(
@@ -1568,16 +1677,18 @@ class VisualTargetTool:
                     final_result = refine_result
             finally:
                 del crop_data, crop_box
-        except VisualPerceptionUnavailableError:
+        except VisualPerceptionUnavailableError as exc:
             return VisualTargetOutcome(
                 error=ToolResult(False, "Visual targeting is temporarily unavailable.", self.risk_level),
                 failure_stage=TargetingFailureStage.REFINEMENT_PROVIDER,
+                failure_category=getattr(exc, "category", None),
                 coarse_result=coarse_result,
             )
-        except MalformedVisualPerceptionResponseError:
+        except MalformedVisualPerceptionResponseError as exc:
             return VisualTargetOutcome(
                 error=ToolResult(False, "Visual targeting response could not be processed.", self.risk_level),
                 failure_stage=TargetingFailureStage.REFINEMENT_PROVIDER,
+                failure_category=getattr(exc, "category", None),
                 coarse_result=coarse_result,
             )
         except Exception:

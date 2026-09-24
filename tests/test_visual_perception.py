@@ -1217,14 +1217,35 @@ def test_openai_visual_target_provider_request_format_and_parsing() -> None:
 def test_openai_visual_target_provider_errors() -> None:
     timeout_client = FakeVisionClient(error=APITimeoutError("Request timed out"))
     provider_timeout = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=timeout_client)
-    with pytest.raises(VisualPerceptionUnavailableError, match="timed out"):
+    with pytest.raises(VisualPerceptionUnavailableError, match="timed out") as exc_info:
         provider_timeout.locate_target(b"png", "target")
+    assert exc_info.value.category == "timeout"
+
+    with pytest.raises(VisualPerceptionUnavailableError) as exc_refine_timeout:
+        provider_timeout.refine_control(b"full_png", b"crop_png", "target")
+    assert exc_refine_timeout.value.category == "timeout"
 
     # Empty response
     empty_client = FakeVisionClient(response=SimpleNamespace(output_text=""))
     provider_empty = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=empty_client)
-    with pytest.raises(MalformedVisualPerceptionResponseError, match="response was empty"):
+    with pytest.raises(MalformedVisualPerceptionResponseError, match="response was empty") as exc_info:
         provider_empty.locate_target(b"png", "target")
+    assert exc_info.value.category == "empty_response"
+
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_refine_empty:
+        provider_empty.refine_control(b"full_png", b"crop_png", "target")
+    assert exc_refine_empty.value.category == "empty_response"
+
+    # Malformed JSON
+    malformed_client = FakeVisionClient(response=SimpleNamespace(output_text="not a valid json"))
+    provider_malformed = OpenAIVisualPerceptionProvider(api_key="k", model="m", client=malformed_client)
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_malformed:
+        provider_malformed.locate_target(b"png", "target")
+    assert exc_malformed.value.category == "malformed_response"
+
+    with pytest.raises(MalformedVisualPerceptionResponseError) as exc_refine_malformed:
+        provider_malformed.refine_control(b"full_png", b"crop_png", "target")
+    assert exc_refine_malformed.value.category == "malformed_response"
 
 
 def test_assistant_visual_target_end_to_end() -> None:
