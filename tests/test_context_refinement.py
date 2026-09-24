@@ -28,6 +28,7 @@ from desktop_assistant.visual_perception import (
     VisualTargetTool,
     _target_crop,
     _global_target_bounds,
+    _annotate_crop_region,
 )
 
 
@@ -103,6 +104,7 @@ def test_refinement_receives_two_images_in_exact_order():
     instructions = req["instructions"]
     # Verify semantic instructions
     assert "Image 1 is the full captured window and exists only for application and layout context" in instructions
+    assert "The outlined/marked region in Image 1 is EXACTLY the area shown enlarged as Image 2" in instructions
     assert "Image 2 is the trusted local crop and is the image whose target geometry must be returned" in instructions
     assert "Returned bounds MUST be relative ONLY to Image 2 / crop" in instructions
     assert "Do not return coordinates for Image 1" in instructions
@@ -147,11 +149,12 @@ def test_visual_click_pipeline_exact_counts_and_context_propagation():
 
     # Verify context refinement received both full window and crop in order
     full_received, crop_received, target_received = vision.context_refinement_calls[0]
-    assert full_received == backend.capture.png_bytes
-    assert target_received == "New Tab"
-
-    expected_crop, _ = _target_crop(backend.capture.png_bytes, 800, 600, coarse_bounds)
+    expected_crop, crop_box = _target_crop(backend.capture.png_bytes, 800, 600, coarse_bounds)
+    expected_full = _annotate_crop_region(backend.capture.png_bytes, 800, 600, crop_box)
+    assert full_received == expected_full
+    assert full_received != backend.capture.png_bytes
     assert crop_received == expected_crop
+    assert target_received == "New Tab"
 
     # No third provider call, no recapturing
     assert not mouse.moves and mouse.clicks == 0
@@ -174,8 +177,12 @@ def test_unconventional_layout_control_found_and_clicked():
 
     # Refine confirms it using full context and crop
     refine_bounds = NormalizedVisualBounds(200, 200, 400, 400)
+    expected_crop, crop_box = _target_crop(backend.capture.png_bytes, 800, 600, coarse_bounds)
+    expected_full = _annotate_crop_region(backend.capture.png_bytes, 800, 600, crop_box)
+
     def refine_with_ctx(full_png, crop_png, target):
-        assert full_png == backend.capture.png_bytes
+        assert full_png == expected_full
+        assert crop_png == expected_crop
         assert target == "New Tab"
         return VisualTargetResult(
             VisualTargetStatus.FOUND,
@@ -269,3 +276,64 @@ def test_visual_click_sensitive_and_visual_target_safe():
 
     prepared_target = registry.prepare("visual_target", ARGS)
     assert prepared_target.risk_level is RiskLevel.SAFE
+
+
+def test_annotate_crop_region_determinism_and_drawing():
+    import io
+    from PIL import Image
+
+    backend = FakeWindowCaptureBackend()
+    raw_png = backend.capture.png_bytes
+    orig_copy = bytes(raw_png)
+
+    crop_box = (50, 60, 250, 200)
+    ann1 = _annotate_crop_region(raw_png, 800, 600, crop_box)
+    ann2 = _annotate_crop_region(raw_png, 800, 600, crop_box)
+
+    # 1. Deterministic output
+    assert ann1 == ann2
+    # 2. Original bytes unchanged
+    assert raw_png == orig_copy
+    assert ann1 != raw_png
+
+    # 3. Valid PNG and correct dimensions
+    with Image.open(io.BytesIO(ann1)) as img:
+        assert img.format == "PNG"
+        assert img.size == (800, 600)
+        # Red outline pixel exists
+        pixel = img.getpixel((50, 60))
+        assert pixel == (255, 0, 0)
+        # Pixel far from annotation remains white
+        assert img.getpixel((10, 10)) == (255, 255, 255)
+
+    # 4. Crop from original has NO annotation
+    crop_data, _ = _target_crop(raw_png, 800, 600, NormalizedVisualBounds(100, 100, 200, 200))
+    with Image.open(io.BytesIO(crop_data)) as crop_img:
+        colors = dict(crop_img.getcolors(10000))
+        assert (255, 0, 0) not in colors
+
+
+def test_annotate_crop_region_edge_clamping_and_validation():
+    backend = FakeWindowCaptureBackend()
+    raw_png = backend.capture.png_bytes
+
+    # Clamping at top-left corner
+    top_left_ann = _annotate_crop_region(raw_png, 800, 600, (0, 0, 100, 100))
+    assert isinstance(top_left_ann, bytes) and len(top_left_ann) > 0
+
+    # Clamping at bottom-right corner
+    bottom_right_ann = _annotate_crop_region(raw_png, 800, 600, (700, 500, 800, 600))
+    assert isinstance(bottom_right_ann, bytes) and len(bottom_right_ann) > 0
+
+    # Clamping with out-of-bounds coordinates
+    oob_ann = _annotate_crop_region(raw_png, 800, 600, (-50, -50, 900, 700))
+    assert isinstance(oob_ann, bytes) and len(oob_ann) > 0
+
+    # Validation errors
+    with pytest.raises(ValueError, match="Invalid captured image"):
+        _annotate_crop_region(b"", 800, 600, (0, 0, 100, 100))
+    with pytest.raises(ValueError, match="Invalid captured image"):
+        _annotate_crop_region(raw_png, 0, 600, (0, 0, 100, 100))
+    with pytest.raises(ValueError, match="Invalid captured image"):
+        _annotate_crop_region(raw_png, 800, 400, (0, 0, 100, 100))
+
