@@ -1077,7 +1077,8 @@ def test_visual_target_tool_found_success_and_safety_invariants() -> None:
     assert details["requested_target"] == "Search"
     assert details["resolved_label"] == "Search"
     assert details["confidence"] == 0.97
-    assert details["normalized_bounds"] == {"left": 12, "top": 85, "right": 48, "bottom": 125}
+    assert details["normalized_bounds"] == {"left": 6, "top": 54, "right": 23, "bottom": 80}
+    assert len(provider.refinement_calls) == 1
     assert details["width"] == 800
     assert details["height"] == 600
 

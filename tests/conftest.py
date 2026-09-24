@@ -330,7 +330,11 @@ class FakeWindowCaptureBackend:
         elif capture is not None:
             self.capture = capture
         else:
-            self.capture = WindowCapture(png_bytes=b"\x89PNG\r\n\x1a\nfake_image_bytes", width=800, height=600)
+            import io
+            from PIL import Image
+            with Image.new("RGB", (800, 600), "white") as image, io.BytesIO() as output:
+                image.save(output, format="PNG")
+                self.capture = WindowCapture(png_bytes=output.getvalue(), width=800, height=600)
         self.error = error
         self.calls: list[int] = []
 
@@ -353,6 +357,14 @@ class FakeVisualPerceptionProvider:
         self.error = error
         self.calls: list[tuple[bytes, str]] = []
         self.target_calls: list[tuple[bytes, str]] = []
+        self.refinement_calls: list[tuple[bytes, str]] = []
+
+    def refine_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
+        self.refinement_calls.append((png_bytes, target))
+        return self.target_result or VisualTargetResult(
+            VisualTargetStatus.FOUND, target, f"Visible {target} control",
+            NormalizedVisualBounds(100, 100, 200, 200), 0.95,
+        )
 
     def inspect(self, png_bytes: bytes, goal: str) -> str:
         self.calls.append((png_bytes, goal))

@@ -117,6 +117,15 @@ _VISUAL_TARGET_JSON_SCHEMA: dict[str, Any] = {
 
 logger = logging.getLogger(__name__)
 
+_REFINEMENT_INSTRUCTIONS = _TARGETING_INSTRUCTIONS + """
+This is an independent refinement/verification pass on a local crop.
+Locate the exact requested target inside this crop. Do not assume the coarse
+prediction was correct. Nearby similar controls are possible.
+If the exact target is not visibly supported, return not_found. If multiple
+plausible matches exist, return ambiguous. Do not guess.
+Coordinates are relative ONLY to the supplied crop, never the original image
+or screen/desktop. No action was performed."""
+
 
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
@@ -480,6 +489,59 @@ def _parse_and_validate_target_response(raw_text: str) -> VisualTargetResult:
 
 class VisualTargetingProvider(Protocol):
     def locate_target(self, png_bytes: bytes, target: str) -> VisualTargetResult: ...
+    def refine_target(self, png_bytes: bytes, target: str) -> VisualTargetResult: ...
+
+
+def _validate_target_result(result: VisualTargetResult) -> None:
+    if not isinstance(result, VisualTargetResult):
+        raise MalformedVisualPerceptionResponseError("Invalid targeting result.")
+    result.__post_init__()
+    if result.bounds is not None:
+        result.bounds.__post_init__()
+
+
+def _target_crop(png: bytes, width: int, height: int,
+                 bounds: NormalizedVisualBounds) -> tuple[bytes, tuple[int, int, int, int]]:
+    """Trusted crop from the original image; no resizing or filesystem access."""
+    bounds.__post_init__()
+    if (not png or len(png) > MAX_IMAGE_BYTES or width <= 0 or height <= 0
+            or width * height > MAX_IMAGE_PIXELS or max(width, height) > MAX_IMAGE_LONG_EDGE):
+        raise ValueError("Invalid captured image.")
+    with Image.open(io.BytesIO(png)) as image:
+        if image.format != "PNG" or image.size != (width, height):
+            raise ValueError("Invalid captured image.")
+        left = bounds.left * width // 1000
+        top = bounds.top * height // 1000
+        right = (bounds.right * width + 999) // 1000
+        bottom = (bounds.bottom * height + 999) // 1000
+        # At least 384px context; pad by at least 128px on each side.
+        crop_width = min(width, max(384, right - left + 2 * max(128, right - left)))
+        crop_height = min(height, max(384, bottom - top + 2 * max(128, bottom - top)))
+        x = min(max(0, (left + right - crop_width) // 2), width - crop_width)
+        y = min(max(0, (top + bottom - crop_height) // 2), height - crop_height)
+        box = (x, y, x + crop_width, y + crop_height)
+        with image.crop(box) as crop, io.BytesIO() as output:
+            crop.save(output, format="PNG")
+            data = output.getvalue()
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ValueError("Crop exceeds image limit.")
+        return data, box
+
+
+def _global_target_bounds(bounds: NormalizedVisualBounds, box: tuple[int, int, int, int],
+                          width: int, height: int) -> NormalizedVisualBounds:
+    bounds.__post_init__()
+    x, y, right, bottom = box
+    # Integer round-half-up, without clipping or repairing provider geometry.
+    def convert(value: int, offset: int, extent: int, total: int) -> int:
+        numerator = offset * 1000 + value * extent
+        return (2 * numerator + total) // (2 * total)
+    return NormalizedVisualBounds(
+        convert(bounds.left, x, right - x, width),
+        convert(bounds.top, y, bottom - y, height),
+        convert(bounds.right, x, right - x, width),
+        convert(bounds.bottom, y, bottom - y, height),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,7 +883,17 @@ class OpenAIVisualPerceptionProvider:
         return observation
 
     def locate_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
+        return self._locate(png_bytes, target, _TARGETING_INSTRUCTIONS)
+
+    def refine_target(self, png_bytes: bytes, target: str) -> VisualTargetResult:
+        return self._locate(png_bytes, target, _REFINEMENT_INSTRUCTIONS)
+
+    def _locate(self, png_bytes: bytes, target: str, instructions: str) -> VisualTargetResult:
         started = perf_counter()
+        if not png_bytes or len(png_bytes) > MAX_IMAGE_BYTES:
+            raise MalformedVisualPerceptionResponseError("Invalid targeting image size.")
+        # Two passes are the complete call budget, including transport retries.
+        client = self._client.with_options(max_retries=0) if isinstance(self._client, OpenAI) else self._client
         bounded_target = target.strip()[:MAX_TARGET_CHARS]
         b64_image = base64.b64encode(png_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{b64_image}"
@@ -838,9 +910,9 @@ class OpenAIVisualPerceptionProvider:
             },
         ]
         try:
-            response = self._client.responses.create(  # type: ignore[attr-defined]
+            response = client.responses.create(  # type: ignore[attr-defined]
                 model=self._model,
-                instructions=_TARGETING_INSTRUCTIONS,
+                instructions=instructions,
                 input=[
                     {
                         "role": "user",
@@ -1119,6 +1191,20 @@ class VisualTargetTool:
 
         try:
             result = self._provider.locate_target(png_data, target.target)
+            _validate_target_result(result)
+            if result.status == VisualTargetStatus.FOUND:
+                crop_data, crop_box = _target_crop(png_data, width, height, result.bounds)
+                try:
+                    result = self._provider.refine_target(crop_data, target.target)
+                    _validate_target_result(result)
+                    if result.status == VisualTargetStatus.FOUND:
+                        result = VisualTargetResult(
+                            status=result.status, label=result.label, description=result.description,
+                            bounds=_global_target_bounds(result.bounds, crop_box, width, height),
+                            confidence=result.confidence,
+                        )
+                finally:
+                    del crop_data, crop_box
         except VisualPerceptionUnavailableError:
             return ToolResult(False, "Visual targeting is temporarily unavailable.", self.risk_level)
         except MalformedVisualPerceptionResponseError:
