@@ -200,7 +200,13 @@ Action: ui_action with query: Notepad, control: Untitled, action: select
 User: 'Κλείσε το File menu στο Notepad.' or 'Collapse File in Notepad.'
 Action: ui_action with query: Notepad, control: File, action: collapse
 
-For ui_action, require an explicit target window, accessible control name, and action ('invoke', 'select', 'expand', 'collapse').
+User: 'Κλείσε το Spell check στο Notepad.' or 'Turn off Spell check in Notepad.' or 'Kleise to Spell check sto Notepad.'
+Action: ui_action with query: Notepad, control: Spell check, action: toggle_off
+
+User: 'Άνοιξε το Spell check στο Notepad.' or 'Turn on Spell check in Notepad.' or 'Anoikse to Spell check sto Notepad.'
+Action: ui_action with query: Notepad, control: Spell check, action: toggle_on
+
+For ui_action, require an explicit target window, accessible control name, and action ('invoke', 'select', 'expand', 'collapse', 'toggle_on', 'toggle_off').
 
 User: 'Άνοιξε το Spotify και μετά γύρνα στο VS Code.'
 Action: propose_action_plan with 1. open_app Spotify, 2. focus_window query: VS Code

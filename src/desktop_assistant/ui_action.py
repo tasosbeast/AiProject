@@ -28,6 +28,8 @@ class UIAction(str, Enum):
     SELECT = "select"
     EXPAND = "expand"
     COLLAPSE = "collapse"
+    TOGGLE_ON = "toggle_on"
+    TOGGLE_OFF = "toggle_off"
 
 
 _ACTION_PATTERN_NAMES = {
@@ -35,6 +37,8 @@ _ACTION_PATTERN_NAMES = {
     UIAction.SELECT: "SelectionItem",
     UIAction.EXPAND: "ExpandCollapse",
     UIAction.COLLAPSE: "ExpandCollapse",
+    UIAction.TOGGLE_ON: "Toggle",
+    UIAction.TOGGLE_OFF: "Toggle",
 }
 
 
@@ -44,6 +48,11 @@ class PreparedControlIdentity:
     name: str
     automation_id: str
     runtime_id: tuple[int, ...]
+    current_toggle_state: str | None = None
+
+    @property
+    def toggle_state(self) -> str | None:
+        return self.current_toggle_state
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +66,11 @@ class PreparedUIAction:
     name: str
     automation_id: str
     runtime_id: tuple[int, ...]
+    desired_toggle_state: str | None = None
+
+    @property
+    def desired_state(self) -> str | None:
+        return self.desired_toggle_state
 
 
 class UIActionController(Protocol):
@@ -97,25 +111,49 @@ def _get_runtime_id(element: object, types: object) -> tuple[int, ...] | None:
         return None
 
 
+def _read_pattern_toggle_state(
+    pattern: object,
+    on_val: object,
+    off_val: object,
+    indet_val: object,
+) -> str | None:
+    try:
+        raw_state = getattr(pattern, "CurrentToggleState", None)
+        if callable(raw_state):
+            raw_state = raw_state()
+        if raw_state == on_val:
+            return "on"
+        if raw_state == off_val:
+            return "off"
+        if raw_state == indet_val:
+            return "indeterminate"
+        return "unknown"
+    except Exception:
+        return None
+
+
 def _execute_pattern_action(element: object, types: object, action: UIAction) -> None:
     if action == UIAction.INVOKE:
-        pattern_id = getattr(types, "UIA_InvokePatternId", 10000)
+        pattern_id = getattr(types, "UIA_InvokePatternId", None)
         interface_name = "IUIAutomationInvokePattern"
         method_name = "Invoke"
     elif action == UIAction.SELECT:
-        pattern_id = getattr(types, "UIA_SelectionItemPatternId", 10010)
+        pattern_id = getattr(types, "UIA_SelectionItemPatternId", None)
         interface_name = "IUIAutomationSelectionItemPattern"
         method_name = "Select"
     elif action == UIAction.EXPAND:
-        pattern_id = getattr(types, "UIA_ExpandCollapsePatternId", 10005)
+        pattern_id = getattr(types, "UIA_ExpandCollapsePatternId", None)
         interface_name = "IUIAutomationExpandCollapsePattern"
         method_name = "Expand"
     elif action == UIAction.COLLAPSE:
-        pattern_id = getattr(types, "UIA_ExpandCollapsePatternId", 10005)
+        pattern_id = getattr(types, "UIA_ExpandCollapsePatternId", None)
         interface_name = "IUIAutomationExpandCollapsePattern"
         method_name = "Collapse"
     else:
         raise ValueError(f"Unsupported UI action: {action}")
+
+    if pattern_id is None:
+        raise RuntimeError(f"UI Automation pattern constant for {action.value} is unavailable.")
 
     raw_pattern = element.GetCurrentPattern(pattern_id)
     if raw_pattern is None:
@@ -132,6 +170,65 @@ def _execute_pattern_action(element: object, types: object, action: UIAction) ->
     if method is None or not callable(method):
         raise RuntimeError(f"The control pattern does not support {method_name}.")
     method()
+
+
+def _execute_toggle_action(
+    element: object,
+    types: object,
+    target: PreparedUIAction,
+) -> ToolResult:
+    pattern_id = getattr(types, "UIA_TogglePatternId", None)
+    if pattern_id is None:
+        raise RuntimeError("UI Automation TogglePatternId constant is unavailable.")
+
+    on_val = getattr(types, "ToggleState_On", None)
+    off_val = getattr(types, "ToggleState_Off", None)
+    indet_val = getattr(types, "ToggleState_Indeterminate", None)
+    if on_val is None or off_val is None or indet_val is None:
+        raise RuntimeError("UI Automation ToggleState constants are unavailable.")
+
+    raw_pattern = element.GetCurrentPattern(pattern_id)
+    if raw_pattern is None:
+        raise RuntimeError("The requested pattern is not available on the control.")
+    pattern = raw_pattern
+    if hasattr(pattern, "QueryInterface"):
+        try:
+            interface_cls = getattr(types, "IUIAutomationTogglePattern", None)
+            if interface_cls is not None:
+                pattern = pattern.QueryInterface(interface_cls)
+        except Exception:
+            pass
+
+    current_state = _read_pattern_toggle_state(pattern, on_val, off_val, indet_val)
+    if current_state not in ("on", "off"):
+        return ToolResult(False, f"Failed to perform {target.action.value} on '{target.name}'.", RiskLevel.SENSITIVE)
+
+    desired = target.desired_toggle_state or ("on" if target.action == UIAction.TOGGLE_ON else "off")
+    title = bounded_window_label(target.title)
+
+    if current_state == desired:
+        return ToolResult(
+            True,
+            f"Performed {target.action.value} on '{target.name}' in {title}.",
+            RiskLevel.SENSITIVE,
+            {"action": target.action.value, "control": target.name, "window": target.title},
+        )
+
+    toggle_method = getattr(pattern, "Toggle", None)
+    if toggle_method is None or not callable(toggle_method):
+        raise RuntimeError("The control pattern does not support Toggle.")
+    toggle_method()
+
+    resulting_state = _read_pattern_toggle_state(pattern, on_val, off_val, indet_val)
+    if resulting_state != desired:
+        return ToolResult(False, f"Failed to perform {target.action.value} on '{target.name}'.", RiskLevel.SENSITIVE)
+
+    return ToolResult(
+        True,
+        f"Performed {target.action.value} on '{target.name}' in {title}.",
+        RiskLevel.SENSITIVE,
+        {"action": target.action.value, "control": target.name, "window": target.title},
+    )
 
 
 class WindowsUIActionController:
@@ -156,11 +253,42 @@ class WindowsUIActionController:
     @staticmethod
     def _available(element: object, types: object, pattern: str) -> bool:
         try:
-            return bool(element.GetCurrentPropertyValue(
-                getattr(types, f"UIA_Is{pattern}PatternAvailablePropertyId"),
-            ))
+            prop_id = getattr(types, f"UIA_Is{pattern}PatternAvailablePropertyId", None)
+            if prop_id is None:
+                return False
+            return bool(element.GetCurrentPropertyValue(prop_id))
         except Exception:
             return False
+
+    @staticmethod
+    def _get_element_toggle_state(element: object, types: object) -> str | None:
+        pattern_id = getattr(types, "UIA_TogglePatternId", None)
+        if pattern_id is None:
+            return None
+        on_val = getattr(types, "ToggleState_On", None)
+        off_val = getattr(types, "ToggleState_Off", None)
+        indet_val = getattr(types, "ToggleState_Indeterminate", None)
+        if on_val is None or off_val is None or indet_val is None:
+            return None
+
+        raw_pattern = None
+        try:
+            raw_pattern = element.GetCurrentPattern(pattern_id)
+        except Exception:
+            return None
+        if raw_pattern is None:
+            return None
+
+        pattern = raw_pattern
+        if hasattr(pattern, "QueryInterface"):
+            try:
+                interface_cls = getattr(types, "IUIAutomationTogglePattern", None)
+                if interface_cls is not None:
+                    pattern = pattern.QueryInterface(interface_cls)
+            except Exception:
+                pass
+
+        return _read_pattern_toggle_state(pattern, on_val, off_val, indet_val)
 
     def resolve_control(
         self,
@@ -186,6 +314,14 @@ class WindowsUIActionController:
                     or root.CurrentProcessId != process_id
                 ):
                     return "The target window could not be verified."
+
+                if action in (UIAction.TOGGLE_ON, UIAction.TOGGLE_OFF):
+                    pattern_id = getattr(types, "UIA_TogglePatternId", None)
+                    on_val = getattr(types, "ToggleState_On", None)
+                    off_val = getattr(types, "ToggleState_Off", None)
+                    indet_val = getattr(types, "ToggleState_Indeterminate", None)
+                    if pattern_id is None or on_val is None or off_val is None or indet_val is None:
+                        return "The target control could not be inspected safely."
 
                 type_names = {}
                 for raw, friendly in _CONTROL_TYPES:
@@ -222,12 +358,17 @@ class WindowsUIActionController:
                         if not name.strip():
                             continue
                         automation_id = _bounded(element.CurrentAutomationId, MAX_AUTOMATION_ID)
+                        toggle_state = None
+                        if action in (UIAction.TOGGLE_ON, UIAction.TOGGLE_OFF):
+                            toggle_state = self._get_element_toggle_state(element, types)
+
                         candidates.append(
                             PreparedControlIdentity(
                                 control_type=friendly,
                                 name=name,
                                 automation_id=automation_id,
                                 runtime_id=runtime_id,
+                                current_toggle_state=toggle_state,
                             )
                         )
                     except Exception:
@@ -239,7 +380,17 @@ class WindowsUIActionController:
                 ):
                     return "The target window could not be verified."
 
-                return self._match_candidate(candidates, control_name)
+                matched = self._match_candidate(candidates, control_name)
+                if isinstance(matched, str):
+                    return matched
+
+                if action in (UIAction.TOGGLE_ON, UIAction.TOGGLE_OFF):
+                    if matched.current_toggle_state == "indeterminate":
+                        return f"The target control '{matched.name}' is in an indeterminate state."
+                    if matched.current_toggle_state not in ("on", "off"):
+                        return f"The target control '{matched.name}' does not expose a supported toggle state."
+
+                return matched
         except Exception as exc:
             logger.warning("UI control resolution failed: %s", type(exc).__name__)
             return "The target control could not be inspected safely."
@@ -324,6 +475,9 @@ class WindowsUIActionController:
                 if not self._available(element, types, pattern_name):
                     return ToolResult(False, "The target control has changed or is no longer available.", RiskLevel.SENSITIVE)
 
+                if target.action in (UIAction.TOGGLE_ON, UIAction.TOGGLE_OFF):
+                    return _execute_toggle_action(element, types, target)
+
                 _execute_pattern_action(element, types, target.action)
 
                 title = bounded_window_label(target.title)
@@ -396,6 +550,18 @@ class UIActionTool:
         if not isinstance(identity, PreparedControlIdentity):
             return self._failure("The target control could not be prepared safely.")
 
+        desired_toggle_state = None
+        if action == UIAction.TOGGLE_ON:
+            desired_toggle_state = "on"
+        elif action == UIAction.TOGGLE_OFF:
+            desired_toggle_state = "off"
+
+        if action in (UIAction.TOGGLE_ON, UIAction.TOGGLE_OFF):
+            if identity.current_toggle_state == "indeterminate":
+                return self._failure(f"The target control '{identity.name}' is in an indeterminate state.")
+            if identity.current_toggle_state not in ("on", "off"):
+                return self._failure(f"The target control '{identity.name}' does not expose a supported toggle state.")
+
         prepared = PreparedUIAction(
             handle=match.handle,
             process_id=match.process_id,
@@ -406,6 +572,7 @@ class UIActionTool:
             name=identity.name,
             automation_id=identity.automation_id,
             runtime_id=identity.runtime_id,
+            desired_toggle_state=desired_toggle_state,
         )
 
         normalized = ToolArguments((

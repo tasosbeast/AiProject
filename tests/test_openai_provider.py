@@ -283,6 +283,12 @@ def test_provider_accepts_ui_inspect_routing_for_explicit_targets(utterance, que
     ("Pata Settings sto Notepad.", "Notepad", "Settings", "invoke"),
     ("Expand File in Notepad.", "Notepad", "File", "expand"),
     ("Collapse File in Notepad.", "Notepad", "File", "collapse"),
+    ("Κλείσε το Spell check στο Notepad.", "Notepad", "Spell check", "toggle_off"),
+    ("Άνοιξε το Spell check στο Notepad.", "Notepad", "Spell check", "toggle_on"),
+    ("Turn off Spell check in Notepad.", "Notepad", "Spell check", "toggle_off"),
+    ("Turn on Spell check in Notepad.", "Notepad", "Spell check", "toggle_on"),
+    ("Kleise to Spell check sto Notepad.", "Notepad", "Spell check", "toggle_off"),
+    ("Anoikse to Spell check sto Notepad.", "Notepad", "Spell check", "toggle_on"),
 ])
 def test_provider_accepts_ui_action_routing(utterance, query, control, action):
     client = FakeClient(SimpleNamespace(output=[function_call(

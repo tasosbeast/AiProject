@@ -588,7 +588,7 @@ def _additional_tool_definition(tool: RegisteredTool) -> ToolDefinition:
 
         return ToolDefinition(
             tool.name,
-            "Perform a confirmed UI Automation action on an existing window control (invoke, select, expand, collapse).",
+            "Perform a confirmed UI Automation action on an existing window control (invoke, select, expand, collapse, toggle_on, toggle_off).",
             (
                 string_argument("query", "Existing window title or application name."),
                 string_argument("control", "Exact accessible control name or label."),

@@ -135,7 +135,7 @@ def test_registry_generates_strict_schemas_from_execution_metadata() -> None:
         "action": {
             "type": "string",
             "description": "Exact UI action to perform.",
-            "enum": ["invoke", "select", "expand", "collapse"],
+            "enum": ["invoke", "select", "expand", "collapse", "toggle_on", "toggle_off"],
         },
     }
 
